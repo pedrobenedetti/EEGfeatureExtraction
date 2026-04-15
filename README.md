@@ -77,13 +77,7 @@ Plots are shown, but they are not exported in the current version of the script.
 
 ## Repository structure
 
-```text
-EEGfeatureExtraction/
-├── featureExtraction_1.py
-├── featureExtraction_Reshape_2.py
-├── featureExtraction_Normalize_3.py
-├── featureExtraction_PCA_4.py
-└── README.md
+
 
 flowchart TD
     A["EEG crudo / archivos fuente"] --> B["featureExtraction_1.py<br/>Extrae features EEG por sujeto-condición-banda<br/>Salida: EEG_features_subject_level.xlsx"]
