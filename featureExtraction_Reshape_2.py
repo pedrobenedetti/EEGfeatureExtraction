@@ -13,7 +13,7 @@ data = pd.read_excel(filepath, sheet_name="subject_level")
 id_cols = ["subject", "condition"]
 band_col = "band"
 
-shared_cols = [c for c in data.columns if c.startswith(("spec_exp_", "spec_off_"))]
+shared_cols = [c for c in data.columns if c.startswith(("spec_exp_", "spec_off_", "te_","lzc"))]
 feature_cols = [c for c in data.columns if c not in id_cols + [band_col]]
 banded_cols = [c for c in feature_cols if c not in shared_cols]
 
