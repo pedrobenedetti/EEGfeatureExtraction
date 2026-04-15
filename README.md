@@ -88,7 +88,7 @@ EEGfeatureExtraction/
 
 ```mermaid
 flowchart TD
-    A["EEG raw data / source files"] --> B["featureExtraction_1.py<br>Extracts EEG features per subject, condition, band, and trial<br>Output: EEG_features_subject_level.xlsx"]
+    A["EEG raw data / source files"] --> B["featureExtraction_1.py<br><br>Output: EEG_features_subject_level.xlsx"]
 
     B --> C["featureExtraction_Reshape_2.py<br>Reshapes the table to wide format<br>Band-dependent features become separate columns<br>Output: EEG_features_wide.xlsx"]
 
