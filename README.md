@@ -88,13 +88,13 @@ EEGfeatureExtraction/
 
 ```mermaid
 flowchart TD
-    A["EEG raw data / source files"] --> B["featureExtraction_1.py<br><br>Output: EEG_features_subject_level.xlsx"]
+    A["EEG raw data / source files"] --> B["featureExtraction_1.py<br>Output: EEG_features_subject_level.xlsx"]
 
-    B --> C["featureExtraction_Reshape_2.py<br>Reshapes the table to wide format<br>Band-dependent features become separate columns<br>Output: EEG_features_wide.xlsx"]
+    B --> C["featureExtraction_Reshape_2.py<br>Output: EEG_features_wide.xlsx"]
 
-    C --> D["featureExtraction_Normalize_3.py<br>Standardizes numeric feature columns<br>Keeps subject and condition unchanged<br>Output: EEG_features_norm.xlsx"]
+    C --> D["featureExtraction_Normalize_3.py<br>Output: EEG_features_norm.xlsx"]
 
-    D --> E["featureExtraction_PCA_4.py<br>Runs PCA on normalized features<br>Computes scores, loadings, and explained variance"]
+    D --> E["featureExtraction_PCA_4.py"]
 
     E --> F["EEG_PCA_results.xlsx<br>Sheets: scores, loadings, variance"]
     E --> G["EEG_PCA_summary.txt"]
