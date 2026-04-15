@@ -9,19 +9,19 @@ Describí en 3-6 líneas cuál es la lógica general del flujo de trabajo.
 ### 1. `featureExtraction_1.py`
 
 **Purpose**  
-This script receives a set of signals from multiple recordings, listed in the `file_all` list in the main block. All files are assumed to be located in the same folder, whose path is specified in `path`. Features are extracted for the conditions listed in `conds` and for the frequency bands defined in the `BANDS` dictionary, which contains both the band names and their corresponding frequency ranges.
+This script receives a set of signals from multiple recordings, listed in the `file_all` list in the main block. All files are assumed to be located in the same folder, whose path is specified in `path`. Features are extracted for the conditions listed in `conds` and for the frequency bands defined in the `BANDS` dictionary, which contains both the band names and their corresponding frequency ranges. Bad channels for each recording are specified in the `bads_all` array.
 
 The extracted features are periodic band power, aperiodic exponent and offset (modeled using the FOOOF algorithm), weighted phase lag index (wPLI), weighted symbolic mutual information (wSMI), Lempel-Ziv complexity (LZC), transfer entropy (TE), and permutation entropy (PE).
+
 **Inputs**
-- Input 1
-- Input 2
+- **Recordings**, listed in `file_all` and located in `path`
+- **Bad Channels**, listed in `bads_all`
 
 **Outputs**
-- Output 1
-- Output 2
+- **EEG_features_subject_level.xlsx**, a file with each feature for each subject, band and condition.
 
 **Notes**  
-Important clarifications, assumptions, methodological details, etc.
+Aperiodic components are exported for each band, but they are the same for all of them. Later in the pipeline they are unified.
 
 ---
 
