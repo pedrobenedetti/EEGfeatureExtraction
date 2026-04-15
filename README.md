@@ -84,3 +84,16 @@ EEGfeatureExtraction/
 ├── featureExtraction_Normalize_3.py
 ├── featureExtraction_PCA_4.py
 └── README.md
+
+flowchart TD
+    A["EEG crudo / archivos fuente"] --> B["featureExtraction_1.py<br/>Extrae features EEG por sujeto-condición-banda<br/>Salida: EEG_features_subject_level.xlsx"]
+
+    B --> C["featureExtraction_Reshape_2.py<br/>Pasa la tabla a formato wide<br/>Conserva columnas compartidas<br/>Salida: EEG_features_wide.xlsx"]
+
+    C --> D["featureExtraction_Normalize_3.py<br/>Estandariza variables numéricas<br/>Mantiene subject y condition sin escalar<br/>Salida: EEG_features_norm.xlsx"]
+
+    D --> E["featureExtraction_PCA_4.py<br/>Aplica PCA sobre features normalizadas<br/>Calcula scores, loadings y varianza explicada"]
+
+    E --> F["EEG_PCA_results.xlsx<br/>Hojas: scores, loadings, variance"]
+    E --> G["EEG_PCA_summary.txt"]
+    E --> H["Gráficos<br/>Scree plot, varianza acumulada,<br/>PC1 vs PC2, PC1 vs PC3"]
