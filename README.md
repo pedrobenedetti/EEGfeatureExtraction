@@ -100,3 +100,349 @@ flowchart TD
     E --> G["EEG_PCA_summary.txt"]
     E --> H["Plots<br>Scree plot, cumulative variance<br>PC1 vs PC2, PC1 vs PC3"]
 ```
+
+# Post-PCA statistical analysis and prediction
+R scripts for downstream analyses after PCA on EEG-derived features. The scripts are designed for a dataset where each subject has PCA scores for three experimental conditions (40, 60, 100) and behavioral measures stored in a separate spreadsheet.
+
+## General input files
+
+All scripts assume the working directory contains:
+
+- `EEG_PCA_results.xlsx`
+  - uses the sheet `scores`
+  - expected columns include:
+    - `subject`
+    - `condition`
+    - `PC1`, `PC2`, `PC3`, etc.
+
+- `Protocolo2023_conducta.xlsx`
+  - uses the sheet `Hoja1`
+  - expected columns include:
+    - `subject`
+    - `Grupo`
+    - behavioral variables such as `REY` or `AUT`
+   
+## Common preprocessing choices
+
+Across scripts, the following preprocessing decisions are applied:
+
+- manual exclusion of subjects:
+  - `02_test_2023`
+  - `15_test_2023`
+- `Grupo` is treated as a categorical variable
+- `condition` is treated as a categorical variable
+- color convention:
+  - `Habituación` → `#008080`
+  - `Novedad` → `#dc143c`
+ 
+## Recommended execution order
+
+A reasonable order for using these scripts is:
+
+1. `comparacionesPostPCA.R`
+2. `correlacionesPostPCA.R`
+3. `correlacionesPostPCA_grupo.R`
+4. `elasticNetPostPCA.R`
+5. `elasticNetPostPCA_OneCond.R`
+
+This order goes from inferential analyses on PCA scores to predictive analyses using PCA scores as predictors.
+
+## 1. `comparacionesPostPCA.R`
+
+### Purpose
+
+Tests whether the first three principal components differ by experimental group and condition.
+
+### Main analysis
+
+For each of `PC1`, `PC2`, and `PC3`, the script fits a linear mixed model of the form:
+
+`PC ~ Grupo * condition + (1 | subject)`
+
+This allows testing:
+
+- main effect of `Grupo`
+- main effect of `condition`
+- `Grupo × condition` interaction
+
+### Additional features
+
+- detects outliers using the `1.5 × IQR` rule within each condition and each PC
+- prints which `subject` corresponds to each outlier
+- removes outlier subject-condition rows from the final analysis
+- generates distribution plots and mean plots by group and condition
+- exports ANOVA tables, fixed effects and post hoc results
+
+### Outputs
+
+- `PC_mixed_models_results_no_outliers.xlsx`
+- `PC_mixed_models_summary_no_outliers.txt`
+- folder with plots:
+  - `PC_plots_no_outliers/`
+
+### When to use it
+
+Use this script when the main question is whether EEG latent dimensions differ between groups and/or conditions.
+
+## 2. `correlacionesPostPCA.R`
+
+### Purpose
+
+Computes correlations between `PC1`, `PC2`, `PC3` and a behavioral variable, using all subjects together within each condition.
+
+### Main analysis
+
+For each condition (`40`, `60`, `100`) and each PC (`PC1`, `PC2`, `PC3`), the script computes a Pearson correlation with the selected behavioral output, typically `REY`.
+
+This yields 9 analyses in total.
+
+### Visualization
+
+For each analysis, the script generates a scatter plot:
+
+- all subjects included
+- points colored by `Grupo`
+- one global regression line
+- annotation with:
+  - `r`
+  - `p`
+  - `n`
+
+### Multiple-comparison correction
+
+- raw `p` values
+- Holm-corrected `p` values across the 9 tests
+
+### Outputs
+
+- `PC_REY_correlations.xlsx`
+- `PC_REY_correlations_summary.txt`
+- folder with plots:
+  - `Correlations_PCs_REY/`
+
+### When to use it
+
+Use this script when the goal is to evaluate simple linear associations between PCA scores and behavior within each condition, while still visualizing both groups together.
+
+## 3. `correlacionesPostPCA_grupo.R`
+
+### Purpose
+
+Computes the same PC-behavior correlations as above, but separately for each experimental group.
+
+### Main analysis
+
+For each:
+
+- group (`Habituación`, `Novedad`)
+- condition (`40`, `60`, `100`)
+- PC (`PC1`, `PC2`, `PC3`)
+
+the script computes a Pearson correlation with the selected behavioral variable.
+
+This yields 18 analyses in total.
+
+### Visualization
+
+For each analysis, the script generates a scatter plot:
+
+- only subjects from one group
+- one regression line
+- annotation with:
+  - `r`
+  - `p`
+  - `n`
+
+### Multiple-comparison correction
+
+- raw `p` values
+- Holm-corrected `p` values across the 18 tests
+
+### Outputs
+
+- `PC_REY_correlations_by_group.xlsx`
+- `PC_REY_correlations_by_group_summary.txt`
+- folder with plots:
+  - `Correlations_PCs_REY_by_group/`
+
+### When to use it
+
+Use this script as an exploratory analysis to see whether the relation between PCA scores and behavior differs across groups.
+
+### Important note
+
+Because the sample is split by group, the number of subjects per analysis becomes small. Results should therefore be interpreted cautiously and mainly as exploratory.
+
+## 4. `elasticNetPostPCA.R`
+
+### Purpose
+
+Uses PCA scores to predict a behavioral output at the subject level with Elastic Net regularization.
+
+### Main idea
+
+This script builds one row per subject by taking `PC1`, `PC2`, and `PC3` separately for each condition:
+
+- `PC1_40`, `PC1_60`, `PC1_100`
+- `PC2_40`, `PC2_60`, `PC2_100`
+- `PC3_40`, `PC3_60`, `PC3_100`
+
+It then adds `Grupo` as an additional predictor.
+
+### Predictors
+
+- `Grupo`
+- `PC1_40`, `PC1_60`, `PC1_100`
+- `PC2_40`, `PC2_60`, `PC2_100`
+- `PC3_40`, `PC3_60`, `PC3_100`
+
+### Target
+
+Defined in the script with:
+
+`target_var <- "REY"`
+
+This can be changed to any other behavioral variable present in the conduct spreadsheet.
+
+### Model selection
+
+- external validation: leave-one-out cross-validation
+- internal tuning:
+  - `alpha` grid from ridge to lasso
+  - `lambda` selected by `cv.glmnet`
+
+### Metrics
+
+The script reports:
+
+- RMSE
+- MAE
+- predictive `R²`
+- correlation between observed and predicted values
+
+### Visualization
+
+The script generates:
+
+- observed vs predicted
+- residuals vs predicted
+- CV error by `alpha`
+- nonzero coefficients of the final model
+
+### Outputs
+
+- `ElasticNet_REY_results.xlsx`
+- `ElasticNet_REY_summary.txt`
+- folder with plots:
+  - `ElasticNet_plots/`
+
+### When to use it
+
+Use this script when the goal is to predict a behavioral output from EEG latent variables and group membership, using all three conditions jointly.
+
+## 5. `elasticNetPostPCA_OneCond.R`
+
+### Purpose
+
+Runs a simpler Elastic Net model using only one condition plus `Grupo`.
+
+### Main idea
+
+Instead of using all three conditions together, this script filters the PCA scores to a single condition and builds a subject-level model with:
+
+- `Grupo`
+- `PC1`
+- `PC2`
+- `PC3`
+
+for that selected condition only.
+
+### Condition selection
+
+Controlled by:
+
+`selected_condition <- 100`
+
+This can be changed to `40`, `60`, or `100`.
+
+### Target
+
+Defined in the script with:
+
+`target_var <- "REY"`
+
+### Model selection
+
+Same strategy as the multi-condition version:
+
+- external LOOCV
+- internal tuning of `alpha` and `lambda`
+
+### Visualization
+
+The script generates:
+
+- observed vs predicted
+- residuals vs predicted
+- CV error by `alpha`
+- nonzero coefficients
+
+### Outputs
+
+Examples depend on the chosen condition, e.g.:
+
+- `ElasticNet_condition_100_REY_results.xlsx`
+- `ElasticNet_condition_100_REY_summary.txt`
+- folder with plots:
+  - `ElasticNet_condition_100_plots/`
+
+### When to use it
+
+Use this script to evaluate whether one specific condition, by itself, is sufficient for predicting the behavioral output.
+
+This is useful for comparing:
+
+- condition 40 only
+- condition 60 only
+- condition 100 only
+- all three conditions together
+
+## Practical interpretation guide
+
+These scripts address different questions and should not be interpreted as redundant.
+
+- `comparacionesPostPCA.R` asks whether PCA scores differ by group and condition.
+- `correlacionesPostPCA.R` asks whether PCA scores are linearly associated with behavior within each condition.
+- `correlacionesPostPCA_grupo.R` asks whether those associations look different when groups are analyzed separately.
+- `elasticNetPostPCA.R` asks whether PCA scores and group jointly predict behavior at the subject level.
+- `elasticNetPostPCA_OneCond.R` asks whether a single condition is enough for prediction.
+
+In other words:
+
+- mixed models are mainly inferential
+- correlations are mainly descriptive/exploratory
+- Elastic Net is mainly predictive
+
+## Dependencies
+
+These scripts rely on the following R packages, depending on the file:
+
+- `readxl`
+- `dplyr`
+- `tidyr`
+- `ggplot2`
+- `openxlsx`
+- `lme4`
+- `lmerTest`
+- `emmeans`
+- `broom.mixed`
+- `glmnet`
+
+## Notes
+
+- Sheet names are hard-coded and should match the spreadsheets exactly.
+- Subject IDs are expected to match between PCA results and behavioral data.
+- The scripts were written for a repeated-measures design with:
+  - one fixed group per subject
+  - three conditions per subject
+  - one behavioral output per subject
