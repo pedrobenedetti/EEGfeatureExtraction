@@ -31,6 +31,7 @@ import mne
 import numpy as np
 import pandas as pd
 import scipy.special as sp_special
+from mne.preprocessing import ICA
 from mne_connectivity import spectral_connectivity_epochs
 from scipy.integrate import simpson
 from scipy.signal import detrend
@@ -3768,7 +3769,7 @@ if __name__ == "__main__":
         ["A6", "A8", "A15", "B24", "C16", "D3"],
     ]
 
-    bads_ICA = [
+    bads_ICA_all = [
         [0, 4, 13, 14],  # s = 0
         [0, 3, 9, 14],  # s = 1
         [0, 2, 12],  # s = 2
@@ -3825,7 +3826,7 @@ if __name__ == "__main__":
                 # Example: bads = ["A5", "C12", "D8"]
                 # bads = []  # Empty = no bad channels
                 bads = bads_all[i]
-
+                bads_ICA = bads_ICA_all[i]
                 print("\n" + "=" * 80)
                 print("EEG FEATURE EXTRACTION PIPELINE")
                 print("=" * 80)
@@ -3859,7 +3860,7 @@ if __name__ == "__main__":
                     decim=3,
                     random_state=23,
                     reject_limit=250e-6,
-                    bad_ica_channels=bads_ICA[s],
+                    bad_ica_channels=bads_ICA,
                     plot_ica_topo=True,
                     plot_ica_time=True,
                     plot_raw=True,
