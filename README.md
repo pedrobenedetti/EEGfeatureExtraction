@@ -13,14 +13,17 @@ This script receives a set of signals from multiple recordings, listed in the `f
 
 The extracted features are periodic band power, aperiodic exponent and offset (modeled using the FOOOF algorithm), weighted phase lag index (wPLI), weighted symbolic mutual information (wSMI), Lempel-Ziv complexity (LZC), transfer entropy (TE), and permutation entropy (PE).
 
+The script also applies ICA decomposition using 15 components and requires manual selection of noisy components. For this selection, it is recommended to use the `select_ICA.py` script available in this repository and then add the identified noisy components to the `bads_ICA` array in both scripts.
+
 **Inputs**
-- **Recordings**, listed in `file_all` and located in `path`
-- **Bad Channels**, listed in `bads_all`
-- `BANDS` in wich we compute the features
-- `conds`, conditions to analyze in Status channel.
+- Recordings, listed in `file_all` and located in `path`
+- Bad channels, listed in `bads_all`
+- ICA components marked for exclusion, listed in `bads_ICA`
+- Frequency bands defined in `BANDS`
+- Conditions to analyze in the `Status` channel, listed in `conds`
 
 **Output**
-- **EEG_features_subject_level.xlsx**, a file with each feature for each subject, band and condition.
+- `EEG_features_subject_level.xlsx`, a file containing each feature for each subject, band, and condition.
 
 **Notes**  
 Aperiodic components are exported for each band, but they are the same across all bands. The same occurs with LZC and TE data. Later in the pipeline they are unified. The `preprocessing_mne` has a parameter named `edit_marks` in which we can add artificial marks on the status channel to create smaller epochs.
