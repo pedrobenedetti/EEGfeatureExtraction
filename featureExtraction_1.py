@@ -22,23 +22,22 @@ Date: January 2026
 """
 
 import tkinter as tk
-from tkinter import messagebox
-import scipy.special as sp_special
-import scipy as sp
-import mne
-mne.set_log_level("WARNING")
-import matplotlib.pyplot as plt
-import numpy as np
-import os
-from pathlib import Path
-import pandas as pd
-from specparam import SpectralGroupModel
-from scipy.integrate import simpson
-from mne_connectivity import spectral_connectivity_epochs
-from scipy.stats import rankdata
 from itertools import permutations
+from pathlib import Path
+from tkinter import messagebox
+
+import matplotlib.pyplot as plt
+import mne
+import numpy as np
+import pandas as pd
+import scipy.special as sp_special
+from mne_connectivity import spectral_connectivity_epochs
+from scipy.integrate import simpson
 from scipy.signal import detrend
-import ordpy
+from specparam import SpectralGroupModel
+
+mne.set_log_level("WARNING")
+
 
 def preprocessing_mne(
     path: str,
@@ -56,12 +55,15 @@ def preprocessing_mne(
     """Preprocessing of biosemi signals."""
     misc = ["EXG1", "EXG2"]
     eog = []
-    filepath = path + file + ".bdf"
-
-    # Load raw data
-    raw = mne.io.read_raw_bdf(
-        filepath, preload=True, verbose=False, eog=eog, misc=misc, exclude=excluded
-    )
+    try:
+        filepath = path + file + ".bdf"
+        raw = mne.io.read_raw_bdf(filepath, preload=True, verbose=False, eog=eog, misc=misc, exclude=excluded)
+    except:
+        try:
+            print("No se encontró el .bdf, probando con .fif")
+            raw = mne.io.read_raw_fif(filepath, preload=True, verbose=False)
+        except:
+            print("NO SE ENCONTRO EL ARCHIVO NI .BDF NI .FIF")
 
     # Mark bad channels
     raw.info["bads"].extend(bads)
@@ -82,14 +84,12 @@ def preprocessing_mne(
 
     # Interpolate bad channels
     if interpolate and len(raw.info["bads"]) > 0:
-        print(
-            f"Interpolating {len(raw.info['bads'])} bad channel(s): {raw.info['bads']}")
+        print(f"Interpolating {len(raw.info['bads'])} bad channel(s): {raw.info['bads']}")
         raw.interpolate_bads(reset_bads=True)
-        #print("Interpolation completed!")
+        # print("Interpolation completed!")
 
     # Apply bandpass filter
-    raw.filter(lowpass_cut, highpass_cut,
-               l_trans_bandwidth=1, h_trans_bandwidth=1)
+    raw.filter(lowpass_cut, highpass_cut, l_trans_bandwidth=1, h_trans_bandwidth=1)
 
     # Resample
     nfreq = 500
@@ -109,7 +109,7 @@ def preprocessing_mne(
     if edit_marks:
         raw_original = raw.copy()
         raw_marked = raw.copy()
-        
+
         last_ch = len(raw.ch_names) - 1
         old_separation = 30.0
         new_separation = 5.0
@@ -125,7 +125,6 @@ def preprocessing_mne(
         # plt.plot(raw._data[last_ch])
         # plt.show()
         for x in raw_marked._data[last_ch]:
-
             if x < 255:
                 if x != 0:
                     if x != previous_value:
@@ -133,10 +132,12 @@ def preprocessing_mne(
                         separation = (
                             count_zeros // coef
                         )  # separation between two equals marks will be divided by the coef
-                        separation = new_separation * raw_marked.info["sfreq"]  # samples. 5 seconds * 256 samples/second
+                        separation = (
+                            new_separation * raw_marked.info["sfreq"]
+                        )  # samples. 5 seconds * 256 samples/second
                         inserted_POS = last_mark_POS
 
-                        for i in range(last_mark_POS, current_POS-int(separation/2)):
+                        for i in range(last_mark_POS, current_POS - int(separation / 2)):
                             if (i - inserted_POS) >= separation:
                                 raw_marked._data[last_ch][i] = last_mark
                                 inserted_POS = i
@@ -150,19 +151,76 @@ def preprocessing_mne(
 
             previous_value = x
             current_POS = current_POS + 1
-        #plt.plot(raw._data[last_ch])
-        #plt.show()
+        # plt.plot(raw._data[last_ch])
+        # plt.show()
         events_original = mne.find_events(raw_original, stim_channel="Status")
         events_marked = mne.find_events(raw_marked, stim_channel="Status")
         print("raw_marked", events_marked)
         print("raw_original", events_original)
-        
 
     return raw_original, raw_marked
+
+
+def make_ICA(
+    raw,
+    method: str,
+    n_components: int,
+    decim: int,
+    random_state: int,
+    reject_limit,
+    bad_ica_channels,
+    plot_ica_topo: bool,
+    plot_ica_time: bool,
+    plot_raw: bool,
+):
+    """
+    Ajusta ICA sobre canales EEG y aplica la exclusión manual de componentes.
+    """
+
+    raw_clean = raw.copy()
+
+    picks_eeg = mne.pick_types(raw.info, meg=False, eeg=True, eog=False, stim=False, exclude="bads")
+
+    if method == "infomax":
+        ica = ICA(
+            n_components=n_components,
+            method="infomax",
+            fit_params=dict(extended=True),
+            random_state=random_state,
+            max_iter="auto",
+        )
+    else:
+        ica = ICA(n_components=n_components, method=method, random_state=random_state, max_iter="auto")
+
+    reject = dict(eeg=reject_limit) if reject_limit is not None else None
+
+    ica.fit(raw_clean, picks=picks_eeg, decim=decim, reject=reject)
+
+    if plot_ica_topo:
+        ica.plot_components(title="ICA - Componentes Topográficos", cmap="coolwarm")
+        plt.show()
+
+    if plot_ica_time:
+        ica.plot_sources(raw_clean, title="ICA - Componentes en el Tiempo")
+        plt.show()
+
+    if bad_ica_channels is not None:
+        ica.exclude = bad_ica_channels
+
+    raw_clean = ica.apply(raw_clean)
+
+    if plot_raw:
+        raw.plot(title="Señal cruda antes de ICA")
+        raw_clean.plot(title="Señal limpia después de ICA")
+        plt.show()
+
+    return ica, raw_clean
+
 
 # ============================================================================
 # POWER SPECTRA - PERIODIC AND APERIODIC
 # ============================================================================
+
 
 def spectral_parametrization(
     raw,
@@ -276,24 +334,19 @@ def spectral_parametrization(
         aperiodic_exponents_local = np.zeros(n_channels_local)
         aperiodic_offsets_local = np.zeros(n_channels_local)
 
-        fg = SpectralGroupModel(
-            peak_width_limits=[2, 8],
-            min_peak_height=0.05,
-            max_n_peaks=6,
-            aperiodic_mode='fixed'
-        )
+        fg = SpectralGroupModel(peak_width_limits=[2, 8], min_peak_height=0.05, max_n_peaks=6, aperiodic_mode="fixed")
         fg.fit(freqs_arr, psd_arr)
-        all_aperiodic = fg.get_params('aperiodic')
+        all_aperiodic = fg.get_params("aperiodic")
 
         for i in range(n_channels_local):
             try:
-                aperiodic_offsets_local[i] = all_aperiodic[i, 0] # se queda con los offset
-                aperiodic_exponents_local[i] = all_aperiodic[i, 1] # se queda con los exponentes
+                aperiodic_offsets_local[i] = all_aperiodic[i, 0]  # se queda con los offset
+                aperiodic_exponents_local[i] = all_aperiodic[i, 1]  # se queda con los exponentes
 
-                aperiodic_log = all_aperiodic[i, 0] - all_aperiodic[i, 1] * np.log10(freqs_arr) #Calcula aperiodica
+                aperiodic_log = all_aperiodic[i, 0] - all_aperiodic[i, 1] * np.log10(freqs_arr)  # Calcula aperiodica
                 data_log = np.log10(psd_arr[i])
                 periodic_log = data_log - aperiodic_log
-                periodic_linear = 10 ** periodic_log
+                periodic_linear = 10**periodic_log
                 theta_mask = (freqs_arr >= band_range[0]) & (freqs_arr <= band_range[1])
                 theta_powers_local[i] = simpson(periodic_linear[theta_mask], freqs_arr[theta_mask])
             except Exception as e:
@@ -308,23 +361,20 @@ def spectral_parametrization(
     # Continuous mode (backward compatible)
     # ---------------------------------------------------------------------
     if trial_mode in ("continuous", "all") or status_channel is None:
-        spectrum = raw.compute_psd(
-            fmin=freq_range[0], fmax=freq_range[1], verbose=False)
+        spectrum = raw.compute_psd(fmin=freq_range[0], fmax=freq_range[1], verbose=False)
         freqs = spectrum.freqs
         psd_data = spectrum.get_data()
 
-        #print(f"\nFitting {psd_data.shape[0]} channels...")
-        theta_powers, aperiodic_exponents, aperiodic_offsets = _fit_specparam_on_psd(
-            freqs, psd_data, raw.ch_names
-        )
+        # print(f"\nFitting {psd_data.shape[0]} channels...")
+        theta_powers, aperiodic_exponents, aperiodic_offsets = _fit_specparam_on_psd(freqs, psd_data, raw.ch_names)
 
         print("Spectral parametrization completed!")
         return {
-            'theta_power': theta_powers,
-            'aperiodic_exponent': aperiodic_exponents,
-            'aperiodic_offset': aperiodic_offsets,
-            'channel_names': raw.ch_names,
-            'mode': 'continuous',
+            "theta_power": theta_powers,
+            "aperiodic_exponent": aperiodic_exponents,
+            "aperiodic_offset": aperiodic_offsets,
+            "channel_names": raw.ch_names,
+            "mode": "continuous",
         }
 
     # ---------------------------------------------------------------------
@@ -332,26 +382,27 @@ def spectral_parametrization(
     # ---------------------------------------------------------------------
     if trial_info is None:
         trial_info = _extract_trials_from_status(
-            raw, status_channel, trial_mode='average',
+            raw,
+            status_channel,
+            trial_mode="average",
             status_start_code=status_start_code,
-            status_end_code=status_end_code
+            status_end_code=status_end_code,
         )
     if trial_info is None:
         raise RuntimeError("No trials found for spectral parametrization. Check Status channel and codes.")
 
-    sfreq = float(raw.info['sfreq'])
-    eeg_picks = mne.pick_types(raw.info, eeg=True, meg=False, stim=False, eog=False,
-                              ecg=False, emg=False, exclude=[])
+    sfreq = float(raw.info["sfreq"])
+    eeg_picks = mne.pick_types(raw.info, eeg=True, meg=False, stim=False, eog=False, ecg=False, emg=False, exclude=[])
     eeg_ch_names = [raw.ch_names[i] for i in eeg_picks]
 
     # Zone aggregation (same zones as connectivity)
     zones, zone_names = _get_zone_definitions()
     zone_indices = _map_zone_indices(eeg_ch_names, zones)
 
-    trial_starts = trial_info['trial_starts']
-    trial_ends = trial_info['trial_ends']
-    trial_vals = trial_info['trial_values']
-    n_trials = trial_info['n_trials']
+    trial_starts = trial_info["trial_starts"]
+    trial_ends = trial_info["trial_ends"]
+    trial_vals = trial_info["trial_values"]
+    n_trials = trial_info["n_trials"]
 
     # Allocate
     theta_power_ch = np.full((n_trials, len(eeg_ch_names)), np.nan)
@@ -366,16 +417,12 @@ def spectral_parametrization(
 
     for t, (s, e) in enumerate(zip(trial_starts, trial_ends)):
         seg = raw.get_data(picks=eeg_picks, start=int(s), stop=int(e))
-        #seg [nchan x nsamples] = [nchan x duration*fs]
+        # seg [nchan x nsamples] = [nchan x duration*fs]
         if seg.shape[1] < 10:
             continue
 
         psd_arr, freqs = mne.time_frequency.psd_array_welch(
-            seg,
-            sfreq=sfreq,
-            fmin=freq_range[0],
-            fmax=freq_range[1],
-            verbose=False,
+            seg, sfreq=sfreq, fmin=freq_range[0], fmax=freq_range[1], verbose=False
         )
 
         th, ex, off = _fit_specparam_on_psd(freqs, psd_arr, eeg_ch_names)
@@ -394,25 +441,27 @@ def spectral_parametrization(
 
     print("Spectral parametrization (trial-by-trial) completed!")
     return {
-        'theta_power_channels': theta_power_ch,
-        'aperiodic_exponent_channels': exponent_ch,
-        'aperiodic_offset_channels': offset_ch,
-        'theta_power_zones': theta_power_z,
-        'aperiodic_exponent_zones': exponent_z,
-        'aperiodic_offset_zones': offset_z,
-        'zone_names': zone_names,
-        'zone_indices': zone_indices,
-        'channel_names': eeg_ch_names,
-        'mode': 'trials',
-        'trial_starts': trial_starts,
-        'trial_ends': trial_ends,
-        'trial_values': trial_vals,
-        'sfreq': sfreq,
+        "theta_power_channels": theta_power_ch,
+        "aperiodic_exponent_channels": exponent_ch,
+        "aperiodic_offset_channels": offset_ch,
+        "theta_power_zones": theta_power_z,
+        "aperiodic_exponent_zones": exponent_z,
+        "aperiodic_offset_zones": offset_z,
+        "zone_names": zone_names,
+        "zone_indices": zone_indices,
+        "channel_names": eeg_ch_names,
+        "mode": "trials",
+        "trial_starts": trial_starts,
+        "trial_ends": trial_ends,
+        "trial_values": trial_vals,
+        "sfreq": sfreq,
     }
+
 
 # ============================================================================
 # PHASE CONNECTIVITY OR SYNCHRONY - WEIGHTED PHASE LAG INDEX (wPLI)
 # ============================================================================
+
 
 def phase_connectivity_wpli(
     raw,
@@ -441,30 +490,144 @@ def phase_connectivity_wpli(
     """
 
     zones = {
-        'frontal': [
-            "C8", "C9", "C10", "C12", "C13", "C14", "C15", "C16", "C17", "C18",
-            "C19", "C20", "C21", "C25", "C26", "C27", "C28", "C29", "C30", "C31", "C32"
+        "frontal": [
+            "C8",
+            "C9",
+            "C10",
+            "C12",
+            "C13",
+            "C14",
+            "C15",
+            "C16",
+            "C17",
+            "C18",
+            "C19",
+            "C20",
+            "C21",
+            "C25",
+            "C26",
+            "C27",
+            "C28",
+            "C29",
+            "C30",
+            "C31",
+            "C32",
         ],
-        'temporal_L': [
-            "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D21", "D22",
-            "D23", "D24", "D25", "D26", "D29", "D30", "D31", "D32"
+        "temporal_L": [
+            "D4",
+            "D5",
+            "D6",
+            "D7",
+            "D8",
+            "D9",
+            "D10",
+            "D11",
+            "D21",
+            "D22",
+            "D23",
+            "D24",
+            "D25",
+            "D26",
+            "D29",
+            "D30",
+            "D31",
+            "D32",
         ],
-        'temporal_R': [
-            "C4", "C5", "C6", "C7", "B10", "B11", "B12", "B13", "B14", "B15",
-            "B16", "B24", "B25", "B26", "B27", "B28", "B29", "B30"
+        "temporal_R": [
+            "C4",
+            "C5",
+            "C6",
+            "C7",
+            "B10",
+            "B11",
+            "B12",
+            "B13",
+            "B14",
+            "B15",
+            "B16",
+            "B24",
+            "B25",
+            "B26",
+            "B27",
+            "B28",
+            "B29",
+            "B30",
         ],
-        'occipital': [
-            "A8", "A9", "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17",
-            "A18", "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28",
-            "A29", "A30", "A31", "B5", "B6", "B7", "B8", "B9"
+        "occipital": [
+            "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A20",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A25",
+            "A26",
+            "A27",
+            "A28",
+            "A29",
+            "A30",
+            "A31",
+            "B5",
+            "B6",
+            "B7",
+            "B8",
+            "B9",
         ],
-        'central': [
-            "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A19", "A32", "B1",
-            "B2", "B3", "B4", "B17", "B18", "B19", "B20", "B21", "B22", "B23",
-            "B31", "B32", "C1", "C2", "C3", "C11", "C22", "C23", "C24", "D1",
-            "D2", "D3", "D12", "D13", "D14", "D15", "D16", "D17", "D18", "D19",
-            "D20", "D27", "D28"
-        ]
+        "central": [
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A19",
+            "A32",
+            "B1",
+            "B2",
+            "B3",
+            "B4",
+            "B17",
+            "B18",
+            "B19",
+            "B20",
+            "B21",
+            "B22",
+            "B23",
+            "B31",
+            "B32",
+            "C1",
+            "C2",
+            "C3",
+            "C11",
+            "C22",
+            "C23",
+            "C24",
+            "D1",
+            "D2",
+            "D3",
+            "D12",
+            "D13",
+            "D14",
+            "D15",
+            "D16",
+            "D17",
+            "D18",
+            "D19",
+            "D20",
+            "D27",
+            "D28",
+        ],
     }
 
     zone_names = list(zones.keys())
@@ -473,39 +636,24 @@ def phase_connectivity_wpli(
     print("PHASE CONNECTIVITY ANALYSIS (wPLI)")
     print("=" * 60)
     print(f"Band range: {band_range[0]}-{band_range[1]} Hz")
-    #print(f"Zones: {zone_names}")
+    # print(f"Zones: {zone_names}")
 
-    #print("\nFiltering signal in band...")
+    # print("\nFiltering signal in band...")
     raw_theta = raw.copy()
-    raw_theta.filter(
-        l_freq=band_range[0],
-        h_freq=band_range[1],
-        picks='eeg',
-        method='iir',
-        verbose=False
-    )
+    raw_theta.filter(l_freq=band_range[0], h_freq=band_range[1], picks="eeg", method="iir", verbose=False)
 
     # ---------------------------------------------------------------------
     # Continuous mode (backward compatible): fixed-length epochs
     # ---------------------------------------------------------------------
     if trial_mode in ("continuous", "all") or status_channel is None:
-        #print("Creating epochs...")
+        # print("Creating epochs...")
         events = mne.make_fixed_length_events(raw_theta, duration=2.0)
-        epochs = mne.Epochs(
-            raw_theta, events, tmin=0, tmax=2.0, baseline=None,
-            preload=True, verbose=False
-        )
+        epochs = mne.Epochs(raw_theta, events, tmin=0, tmax=2.0, baseline=None, preload=True, verbose=False)
         print(f"  Created {len(epochs)} epochs")
 
         print("Computing wPLI connectivity...")
         conn = spectral_connectivity_epochs(
-            epochs,
-            method='wpli',
-            mode='fourier',
-            fmin=band_range[0],
-            fmax=band_range[1],
-            faverage=True,
-            verbose=False
+            epochs, method="wpli", mode="fourier", fmin=band_range[0], fmax=band_range[1], faverage=True, verbose=False
         )
 
         wpli_all = _conn_to_square_matrix(conn, n_channels=len(raw_theta.ch_names))
@@ -541,10 +689,10 @@ def phase_connectivity_wpli(
 
         print("Phase connectivity analysis completed!")
         return {
-            'wpli_matrix': wpli_matrix,
-            'zone_names': zone_names,
-            'zone_indices': zone_indices,
-            'mode': 'continuous',
+            "wpli_matrix": wpli_matrix,
+            "zone_names": zone_names,
+            "zone_indices": zone_indices,
+            "mode": "continuous",
         }
 
     # ---------------------------------------------------------------------
@@ -554,30 +702,28 @@ def phase_connectivity_wpli(
         trial_info = _extract_trials_from_status(
             raw_theta,
             status_channel,
-            trial_mode='average',
+            trial_mode="average",
             status_start_code=status_start_code,
-            status_end_code=status_end_code
+            status_end_code=status_end_code,
         )
 
     if trial_info is None:
         raise RuntimeError("No trials found for wPLI. Check Status channel and codes.")
 
-    sfreq = float(raw_theta.info['sfreq'])
+    sfreq = float(raw_theta.info["sfreq"])
     eeg_picks = mne.pick_types(
-        raw_theta.info,
-        eeg=True, meg=False, stim=False, eog=False,
-        ecg=False, emg=False, exclude=[]
+        raw_theta.info, eeg=True, meg=False, stim=False, eog=False, ecg=False, emg=False, exclude=[]
     )
     eeg_ch_names = [raw_theta.ch_names[i] for i in eeg_picks]
-    info_eeg = mne.create_info(eeg_ch_names, sfreq=sfreq, ch_types='eeg')
+    info_eeg = mne.create_info(eeg_ch_names, sfreq=sfreq, ch_types="eeg")
 
     zone_indices = _map_zone_indices(eeg_ch_names, zones)
     n_zones = len(zone_names)
 
-    trial_starts = trial_info['trial_starts']
-    trial_ends = trial_info['trial_ends']
-    trial_vals = trial_info['trial_values']
-    n_trials = trial_info['n_trials']
+    trial_starts = trial_info["trial_starts"]
+    trial_ends = trial_info["trial_ends"]
+    trial_vals = trial_info["trial_values"]
+    n_trials = trial_info["n_trials"]
 
     wpli_trials = np.full((n_trials, n_zones, n_zones), np.nan)
 
@@ -605,30 +751,15 @@ def phase_connectivity_wpli(
             print(f"  Trial {t + 1}/{n_trials}: no valid subepochs. Filling with NaN.")
             continue
 
-        ep_list = [seg[:, st:st + subepoch_len] for st in starts_sub]
+        ep_list = [seg[:, st : st + subepoch_len] for st in starts_sub]
         ep_data = np.stack(ep_list, axis=0)  # (n_subepochs, n_ch, subepoch_len)
 
-        print(
-            f"  Trial {t + 1}/{n_trials}: {len(starts_sub)} subepochs "
-            f"of {subepoch_duration_s:.1f} s"
-        )
+        print(f"  Trial {t + 1}/{n_trials}: {len(starts_sub)} subepochs of {subepoch_duration_s:.1f} s")
 
-        epochs = mne.EpochsArray(
-            ep_data,
-            info_eeg,
-            tmin=0.0,
-            baseline=None,
-            verbose=False
-        )
+        epochs = mne.EpochsArray(ep_data, info_eeg, tmin=0.0, baseline=None, verbose=False)
 
         conn = spectral_connectivity_epochs(
-            epochs,
-            method='wpli',
-            mode='fourier',
-            fmin=band_range[0],
-            fmax=band_range[1],
-            faverage=True,
-            verbose=False,
+            epochs, method="wpli", mode="fourier", fmin=band_range[0], fmax=band_range[1], faverage=True, verbose=False
         )
 
         wpli_all = _conn_to_square_matrix(conn, n_channels=len(eeg_ch_names))
@@ -654,15 +785,16 @@ def phase_connectivity_wpli(
 
     print("Phase connectivity (trial-by-trial) completed!")
     return {
-        'wpli_trials': wpli_trials,
-        'zone_names': zone_names,
-        'zone_indices': zone_indices,
-        'mode': 'trials',
-        'trial_starts': trial_starts,
-        'trial_ends': trial_ends,
-        'trial_values': trial_vals,
-        'sfreq': sfreq,
+        "wpli_trials": wpli_trials,
+        "zone_names": zone_names,
+        "zone_indices": zone_indices,
+        "mode": "trials",
+        "trial_starts": trial_starts,
+        "trial_ends": trial_ends,
+        "trial_values": trial_vals,
+        "sfreq": sfreq,
     }
+
 
 # ============================================================================
 # PATTERNS CONNECTIVITY - WEIGHTED SYMBOLIC MUTUAL INFORMATION (wSMI)
@@ -670,17 +802,18 @@ def phase_connectivity_wpli(
 
 
 def patterns_connectivity_wsmi(
-        raw,
-        band_range=(4, 8),
-        embedding_dim=3,
-        tau=None,  # None = auto-calculate
-        n_channels_per_zone=None,
-        status_channel='Status',  # Canal de status
-        status_start_code=1,      # Código de inicio (stim)
-        status_end_code=0,        # Código de fin (resp o 0)
-        # 'all' para continuo; en modo trials, filtra por valor si es numérico
-        trial_mode='average',
-        debug_first_pair=False):
+    raw,
+    band_range=(4, 8),
+    embedding_dim=3,
+    tau=None,  # None = auto-calculate
+    n_channels_per_zone=None,
+    status_channel="Status",  # Canal de status
+    status_start_code=1,  # Código de inicio (stim)
+    status_end_code=0,  # Código de fin (resp o 0)
+    # 'all' para continuo; en modo trials, filtra por valor si es numérico
+    trial_mode="average",
+    debug_first_pair=False,
+):
     """
     Calculate weighted Symbolic Mutual Information (wSMI) connectivity.
 
@@ -759,67 +892,189 @@ def patterns_connectivity_wsmi(
 
     # Define zones (same as wPLI)
     zones = {
-        'frontal': [
-            "C8", "C9", "C10", "C12", "C13", "C14", "C15", "C16", "C17", "C18",
-            "C19", "C20", "C21", "C25", "C26", "C27", "C28", "C29", "C30", "C31", "C32"
+        "frontal": [
+            "C8",
+            "C9",
+            "C10",
+            "C12",
+            "C13",
+            "C14",
+            "C15",
+            "C16",
+            "C17",
+            "C18",
+            "C19",
+            "C20",
+            "C21",
+            "C25",
+            "C26",
+            "C27",
+            "C28",
+            "C29",
+            "C30",
+            "C31",
+            "C32",
         ],
-        'temporal_L': [
-            "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D21", "D22",
-            "D23", "D24", "D25", "D26", "D29", "D30", "D31", "D32"
+        "temporal_L": [
+            "D4",
+            "D5",
+            "D6",
+            "D7",
+            "D8",
+            "D9",
+            "D10",
+            "D11",
+            "D21",
+            "D22",
+            "D23",
+            "D24",
+            "D25",
+            "D26",
+            "D29",
+            "D30",
+            "D31",
+            "D32",
         ],
-        'temporal_R': [
-            "C4", "C5", "C6", "C7", "B10", "B11", "B12", "B13", "B14", "B15",
-            "B16", "B24", "B25", "B26", "B27", "B28", "B29", "B30"
+        "temporal_R": [
+            "C4",
+            "C5",
+            "C6",
+            "C7",
+            "B10",
+            "B11",
+            "B12",
+            "B13",
+            "B14",
+            "B15",
+            "B16",
+            "B24",
+            "B25",
+            "B26",
+            "B27",
+            "B28",
+            "B29",
+            "B30",
         ],
-        'occipital': [
-            "A8", "A9", "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17",
-            "A18", "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28",
-            "A29", "A30", "A31", "B5", "B6", "B7", "B8", "B9"
+        "occipital": [
+            "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A20",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A25",
+            "A26",
+            "A27",
+            "A28",
+            "A29",
+            "A30",
+            "A31",
+            "B5",
+            "B6",
+            "B7",
+            "B8",
+            "B9",
         ],
-        'central': [
-            "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A19", "A32", "B1",
-            "B2", "B3", "B4", "B17", "B18", "B19", "B20", "B21", "B22", "B23",
-            "B31", "B32", "C1", "C2", "C3", "C11", "C22", "C23", "C24", "D1",
-            "D2", "D3", "D12", "D13", "D14", "D15", "D16", "D17", "D18", "D19",
-            "D20", "D27", "D28"
-        ]
+        "central": [
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A19",
+            "A32",
+            "B1",
+            "B2",
+            "B3",
+            "B4",
+            "B17",
+            "B18",
+            "B19",
+            "B20",
+            "B21",
+            "B22",
+            "B23",
+            "B31",
+            "B32",
+            "C1",
+            "C2",
+            "C3",
+            "C11",
+            "C22",
+            "C23",
+            "C24",
+            "D1",
+            "D2",
+            "D3",
+            "D12",
+            "D13",
+            "D14",
+            "D15",
+            "D16",
+            "D17",
+            "D18",
+            "D19",
+            "D20",
+            "D27",
+            "D28",
+        ],
     }
 
     zone_names = list(zones.keys())
 
     # Calculate tau dynamically (MATLAB formula)
-    sfreq = raw.info['sfreq']
+    sfreq = raw.info["sfreq"]
     if tau is None:
         tau = round(sfreq / embedding_dim / band_range[1])
         print(f"Auto-calculated tau: {tau} samples")
-        print(f"  (formula: round(sfreq / embedding_dim / theta_max))")
-        #print(
-         #   f"  (sfreq={sfreq}, embedding_dim={embedding_dim}, theta_max={band_range[1]})")
+        print("  (formula: round(sfreq / embedding_dim / theta_max))")
+        # print(
+        #   f"  (sfreq={sfreq}, embedding_dim={embedding_dim}, theta_max={band_range[1]})")
     else:
         print(f"Using provided tau: {tau} samples")
 
     print(f"Band range: {band_range[0]}-{band_range[1]} Hz")
-    #print(f"Embedding dimension: {embedding_dim}")
+    # print(f"Embedding dimension: {embedding_dim}")
     chpz = "ALL" if (n_channels_per_zone is None or n_channels_per_zone <= 0) else str(n_channels_per_zone)
-    #print(f"Channels per zone: {chpz}")
-    #print(f"Trial mode: {trial_mode}")
+    # print(f"Channels per zone: {chpz}")
+    # print(f"Trial mode: {trial_mode}")
 
     # Filter signal
-    #print("\nFiltering signal in band...")
+    # print("\nFiltering signal in band...")
     # -------------------------------------------------------------------------
     # Channel selection (EEG only) - keep indices consistent throughout
     # -------------------------------------------------------------------------
-    sfreq = float(raw.info['sfreq'])
+    sfreq = float(raw.info["sfreq"])
     try:
-        eeg_picks = mne.pick_types(raw.info, eeg=True, meg=False, eog=False,
-                                   stim=False, misc=False, ecg=False, emg=False,
-                                   seeg=False, exclude='bads')
+        eeg_picks = mne.pick_types(
+            raw.info,
+            eeg=True,
+            meg=False,
+            eog=False,
+            stim=False,
+            misc=False,
+            ecg=False,
+            emg=False,
+            seeg=False,
+            exclude="bads",
+        )
     except Exception:
-        eeg_picks = mne.pick_types(raw.info, eeg=True, exclude='bads')
+        eeg_picks = mne.pick_types(raw.info, eeg=True, exclude="bads")
 
     if len(eeg_picks) == 0:
-        raise RuntimeError(
-            "No EEG channels were found after applying picks='eeg'.")
+        raise RuntimeError("No EEG channels were found after applying picks='eeg'.")
 
     eeg_ch_names = [raw.ch_names[i] for i in eeg_picks]
 
@@ -827,33 +1082,30 @@ def patterns_connectivity_wsmi(
     if tau is None:
         tau = int(round(sfreq / embedding_dim / float(band_range[1])))
 
-    print(
-        f"  Using tau={tau} (sfreq={sfreq:.2f} Hz, m={embedding_dim}, fmax={band_range[1]})")
+    print(f"  Using tau={tau} (sfreq={sfreq:.2f} Hz, m={embedding_dim}, fmax={band_range[1]})")
 
     # EEG-only data (filtering strategy depends on trial_mode)
     data_eeg = raw.get_data(picks=eeg_picks)
 
-    #Extract trials if status channel exists
+    # Extract trials if status channel exists
 
     trials_info = None
     if status_channel is not None and status_channel in raw.ch_names:
         print(f"\nExtracting trials from '{status_channel}' channel...")
-        trials_info = _extract_trials_from_status(
-            raw, status_channel, trial_mode, status_start_code, status_end_code)
+        trials_info = _extract_trials_from_status(raw, status_channel, trial_mode, status_start_code, status_end_code)
 
         if trials_info is not None:
             print(f"  Total trials found: {trials_info['n_trials']}")
-            if trial_mode != 'all':
-                print(
-                    f"  Trials matching condition '{trial_mode}': {len(trials_info['trial_indices'])}")
+            if trial_mode != "all":
+                print(f"  Trials matching condition '{trial_mode}': {len(trials_info['trial_indices'])}")
         else:
-            print(f"  WARNING: No trials found or extracted. Using continuous mode.")
-            trial_mode = 'all'
+            print("  WARNING: No trials found or extracted. Using continuous mode.")
+            trial_mode = "all"
     else:
         if status_channel is not None:
             print(f"\nWARNING: Status channel '{status_channel}' not found.")
         print("Using continuous signal mode (trial_mode='all')")
-        trial_mode = 'all'
+        trial_mode = "all"
 
     # EEG channel universe (MATLAB-like)
     data = data_eeg
@@ -895,40 +1147,42 @@ def patterns_connectivity_wsmi(
     n_selected = len(flat_indices)
     total_pairs = n_selected * (n_selected - 1) // 2
 
-    #print(f"\nTotal channels to analyze: {n_selected}")
-    #print(f"Total pairs to compute: {total_pairs}")
+    # print(f"\nTotal channels to analyze: {n_selected}")
+    # print(f"Total pairs to compute: {total_pairs}")
 
     # Calculate wSMI based on trial_mode
-    if trial_mode == 'all' or trials_info is None:
+    if trial_mode == "all" or trials_info is None:
         # Continuous mode: single calculation
-        #print("\n[MODE: CONTINUOUS] Calculating wSMI over entire signal...")
-        #print("This may take 5-15 minutes...")
+        # print("\n[MODE: CONTINUOUS] Calculating wSMI over entire signal...")
+        # print("This may take 5-15 minutes...")
 
         # FIR, zero-phase filtering (EEGLAB pop_eegfiltnew-like)
         data_filt = mne.filter.filter_data(
-            data, sfreq=sfreq, l_freq=band_range[0], h_freq=band_range[1],
-            method='fir', phase='zero', fir_design='firwin', verbose=False)
-
-        wsmi_all = _calculate_wsmi_matrix(
-            data_filt, flat_indices, embedding_dim, tau, debug_first_pair, total_pairs
+            data,
+            sfreq=sfreq,
+            l_freq=band_range[0],
+            h_freq=band_range[1],
+            method="fir",
+            phase="zero",
+            fir_design="firwin",
+            verbose=False,
         )
+
+        wsmi_all = _calculate_wsmi_matrix(data_filt, flat_indices, embedding_dim, tau, debug_first_pair, total_pairs)
 
         # Create zone-to-zone matrix
-        wsmi_matrix = _aggregate_to_zones(
-            wsmi_all, flat_indices, channel_to_zone, zone_names
-        )
+        wsmi_matrix = _aggregate_to_zones(wsmi_all, flat_indices, channel_to_zone, zone_names)
 
         n_trials = 0
 
     else:
         # Trial mode: calculate per trial
-        trial_indices = trials_info['trial_indices']
-        trial_starts = trials_info['trial_starts']
-        trial_ends = trials_info['trial_ends']
+        trial_indices = trials_info["trial_indices"]
+        trial_starts = trials_info["trial_starts"]
+        trial_ends = trials_info["trial_ends"]
         n_trials = len(trial_indices)
 
-        print(
-            f"\n[MODE: TRIAL-BY-TRIAL] Calculating wSMI for {n_trials} trials...")
+        print(f"\n[MODE: TRIAL-BY-TRIAL] Calculating wSMI for {n_trials} trials...")
         print(f"Estimated time: {n_trials * 5}-{n_trials * 10} minutes...")
 
         # Initialize 3D matrix
@@ -945,66 +1199,71 @@ def patterns_connectivity_wsmi(
             min_needed = tau * (embedding_dim - 1) + 1
             if trial_data.shape[1] < (min_needed + 1):
                 print(
-                    f"    WARNING: Trial too short for wSMI (n={trial_data.shape[1]}, needed>{min_needed}). Filling with NaN.")
+                    f"    WARNING: Trial too short for wSMI (n={trial_data.shape[1]}, needed>{min_needed}). Filling with NaN."
+                )
                 wsmi_matrix[:, :, trial_idx] = np.nan
                 continue
 
             try:
                 trial_data_filt = mne.filter.filter_data(
-                    trial_data, sfreq=sfreq, l_freq=band_range[0], h_freq=band_range[1],
-                    method='fir', phase='zero', fir_design='firwin', verbose=False
+                    trial_data,
+                    sfreq=sfreq,
+                    l_freq=band_range[0],
+                    h_freq=band_range[1],
+                    method="fir",
+                    phase="zero",
+                    fir_design="firwin",
+                    verbose=False,
                 )
             except Exception as e:
-                print(
-                    f"    WARNING: FIR filtering failed for trial {trial_idx + 1}: {e}. Filling with NaN.")
+                print(f"    WARNING: FIR filtering failed for trial {trial_idx + 1}: {e}. Filling with NaN.")
                 wsmi_matrix[:, :, trial_idx] = np.nan
                 continue
 
-            print(
-                f"\n  Trial {trial_idx + 1}/{n_trials} (samples {start_sample}-{end_sample})...")
+            print(f"\n  Trial {trial_idx + 1}/{n_trials} (samples {start_sample}-{end_sample})...")
 
             # Calculate for this trial
             wsmi_all_trial = _calculate_wsmi_matrix(
-                trial_data_filt, flat_indices, embedding_dim, tau,
+                trial_data_filt,
+                flat_indices,
+                embedding_dim,
+                tau,
                 debug=(debug_first_pair and trial_idx == 0),
-                total_pairs=total_pairs
+                total_pairs=total_pairs,
             )
 
             # Aggregate to zones
-            wsmi_zones_trial = _aggregate_to_zones(
-                wsmi_all_trial, flat_indices, channel_to_zone, zone_names
-            )
+            wsmi_zones_trial = _aggregate_to_zones(wsmi_all_trial, flat_indices, channel_to_zone, zone_names)
 
             wsmi_matrix[:, :, trial_idx] = wsmi_zones_trial
 
     # Print results
-    if trial_mode == 'all':
+    if trial_mode == "all":
         print("\nwSMI Connectivity Matrix (Zone-to-Zone, Continuous):")
         print("=" * 60)
         _print_matrix(wsmi_matrix, zone_names)
     else:
-        print(
-            f"\nwSMI Connectivity Matrix (Zone-to-Zone, Averaged over {n_trials} trials):")
+        print(f"\nwSMI Connectivity Matrix (Zone-to-Zone, Averaged over {n_trials} trials):")
         print("=" * 60)
         wsmi_avg = wsmi_matrix.mean(axis=2)
         _print_matrix(wsmi_avg, zone_names)
 
-        print(f"\nStandard deviation across trials:")
+        print("\nStandard deviation across trials:")
         wsmi_std = wsmi_matrix.std(axis=2)
         _print_matrix(wsmi_std, zone_names)
 
     print("\nPattern connectivity analysis completed!")
 
     results = {
-        'wsmi_matrix': wsmi_matrix,
-        'wsmi_avg': (wsmi_matrix if trial_mode == 'all' else np.nanmean(wsmi_matrix, axis=2)),
-        'wsmi_std': (np.zeros_like(wsmi_matrix) if trial_mode == 'all' else np.nanstd(wsmi_matrix, axis=2)),
-        'zone_names': zone_names,
-        'zone_indices': zone_indices,
-        'trial_mode': trial_mode,
-        'n_trials': n_trials,
-        'tau': tau,
-        'embedding_dim': embedding_dim
+        "wsmi_matrix": wsmi_matrix,
+        "wsmi_avg": (wsmi_matrix if trial_mode == "all" else np.nanmean(wsmi_matrix, axis=2)),
+        "wsmi_std": (np.zeros_like(wsmi_matrix) if trial_mode == "all" else np.nanstd(wsmi_matrix, axis=2)),
+        "zone_names": zone_names,
+        "zone_indices": zone_indices,
+        "trial_mode": trial_mode,
+        "n_trials": n_trials,
+        "tau": tau,
+        "embedding_dim": embedding_dim,
     }
 
     return results
@@ -1014,36 +1273,152 @@ def patterns_connectivity_wsmi(
 # HELPER FUNCTIONS
 # ============================================================================
 
+
 def _get_zone_definitions():
     """Return the canonical 5-zone definition used across all features."""
-    zone_names = ['frontal', 'temporal_L', 'temporal_R', 'occipital', 'central']
+    zone_names = ["frontal", "temporal_L", "temporal_R", "occipital", "central"]
     zones = {
-        'frontal': [
-            "C8", "C9", "C10", "C12", "C13", "C14", "C15", "C16", "C17", "C18",
-            "C19", "C20", "C21", "C25", "C26", "C27", "C28", "C29", "C30", "C31", "C32"
+        "frontal": [
+            "C8",
+            "C9",
+            "C10",
+            "C12",
+            "C13",
+            "C14",
+            "C15",
+            "C16",
+            "C17",
+            "C18",
+            "C19",
+            "C20",
+            "C21",
+            "C25",
+            "C26",
+            "C27",
+            "C28",
+            "C29",
+            "C30",
+            "C31",
+            "C32",
         ],
-        'temporal_L': [
-            "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D21", "D22",
-            "D23", "D24", "D25", "D26", "D29", "D30", "D31", "D32"
+        "temporal_L": [
+            "D4",
+            "D5",
+            "D6",
+            "D7",
+            "D8",
+            "D9",
+            "D10",
+            "D11",
+            "D21",
+            "D22",
+            "D23",
+            "D24",
+            "D25",
+            "D26",
+            "D29",
+            "D30",
+            "D31",
+            "D32",
         ],
-        'temporal_R': [
-            "C4", "C5", "C6", "C7", "B10", "B11", "B12", "B13", "B14", "B15",
-            "B16", "B24", "B25", "B26", "B27", "B28", "B29", "B30"
+        "temporal_R": [
+            "C4",
+            "C5",
+            "C6",
+            "C7",
+            "B10",
+            "B11",
+            "B12",
+            "B13",
+            "B14",
+            "B15",
+            "B16",
+            "B24",
+            "B25",
+            "B26",
+            "B27",
+            "B28",
+            "B29",
+            "B30",
         ],
-        'occipital': [
-            "A8", "A9", "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17",
-            "A18", "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28",
-            "A29", "A30", "A31", "B5", "B6", "B7", "B8", "B9"
+        "occipital": [
+            "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A20",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A25",
+            "A26",
+            "A27",
+            "A28",
+            "A29",
+            "A30",
+            "A31",
+            "B5",
+            "B6",
+            "B7",
+            "B8",
+            "B9",
         ],
-        'central': [
-            "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A19", "A32", "B1",
-            "B2", "B3", "B4", "B17", "B18", "B19", "B20", "B21", "B22", "B23",
-            "B31", "B32", "C1", "C2", "C3", "C11", "C22", "C23", "C24", "D1",
-            "D2", "D3", "D12", "D13", "D14", "D15", "D16", "D17", "D18", "D19",
-            "D20", "D27", "D28"
-        ]
+        "central": [
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A19",
+            "A32",
+            "B1",
+            "B2",
+            "B3",
+            "B4",
+            "B17",
+            "B18",
+            "B19",
+            "B20",
+            "B21",
+            "B22",
+            "B23",
+            "B31",
+            "B32",
+            "C1",
+            "C2",
+            "C3",
+            "C11",
+            "C22",
+            "C23",
+            "C24",
+            "D1",
+            "D2",
+            "D3",
+            "D12",
+            "D13",
+            "D14",
+            "D15",
+            "D16",
+            "D17",
+            "D18",
+            "D19",
+            "D20",
+            "D27",
+            "D28",
+        ],
     }
     return zones, zone_names
+
 
 def _map_zone_indices(ch_names, zones):
     """Map a list of channel names to zone indices."""
@@ -1051,6 +1426,7 @@ def _map_zone_indices(ch_names, zones):
     for zone_name, channels in zones.items():
         zone_indices[zone_name] = [ch_names.index(ch) for ch in channels if ch in ch_names]
     return zone_indices
+
 
 def _conn_to_square_matrix(conn, n_channels: int):
     """Convert mne-connectivity output to a full symmetric (n_channels x n_channels) matrix."""
@@ -1074,6 +1450,7 @@ def _conn_to_square_matrix(conn, n_channels: int):
         mat = (mat + mat.T) / 2
     return mat
 
+
 def _flatten_symmetric_zone_matrix(mat, zone_names, prefix):
     """Flatten upper triangle (i<j) of a symmetric zone matrix into columns."""
     out = {}
@@ -1082,6 +1459,7 @@ def _flatten_symmetric_zone_matrix(mat, zone_names, prefix):
         for j in range(i + 1, n):
             out[f"{prefix}_{zone_names[i]}__{zone_names[j]}"] = float(mat[i, j])
     return out
+
 
 def _flatten_directed_zone_matrix(mat, zone_names, prefix, include_self=False):
     """Flatten a directed zone matrix into columns (i->j)."""
@@ -1093,6 +1471,7 @@ def _flatten_directed_zone_matrix(mat, zone_names, prefix, include_self=False):
                 continue
             out[f"{prefix}_{zone_names[i]}__{zone_names[j]}"] = float(mat[i, j])
     return out
+
 
 def _build_trialwise_rows(
     subject: str,
@@ -1106,11 +1485,11 @@ def _build_trialwise_rows(
     wsmi_results: dict | None = None,
 ):
     """Create one dict row per trial, with audit columns + feature columns."""
-    sfreq = float(trial_info.get('sfreq', np.nan))
-    starts = trial_info['trial_starts']
-    ends = trial_info['trial_ends']
-    conds = trial_info['trial_values']
-    n_trials = trial_info['n_trials']
+    sfreq = float(trial_info.get("sfreq", np.nan))
+    starts = trial_info["trial_starts"]
+    ends = trial_info["trial_ends"]
+    conds = trial_info["trial_values"]
+    n_trials = trial_info["n_trials"]
 
     rows = []
     for t in range(n_trials):
@@ -1118,64 +1497,65 @@ def _build_trialwise_rows(
         e = int(ends[t])
         cond = int(conds[t])
         row = {
-            'subject': subject,
-            'band': band,
-            'condition': cond,
-            'trial_index': int(t),
-            'start_sample': s,
-            'end_sample': e,
-            'n_samples': int(max(e - s, 0)),
-            'start_s': (s / sfreq) if np.isfinite(sfreq) else np.nan,
-            'end_s': (e / sfreq) if np.isfinite(sfreq) else np.nan,
-            'sfreq': sfreq,
+            "subject": subject,
+            "band": band,
+            "condition": cond,
+            "trial_index": int(t),
+            "start_sample": s,
+            "end_sample": e,
+            "n_samples": int(max(e - s, 0)),
+            "start_s": (s / sfreq) if np.isfinite(sfreq) else np.nan,
+            "end_s": (e / sfreq) if np.isfinite(sfreq) else np.nan,
+            "sfreq": sfreq,
         }
 
         # Spectral parametrization (zones)
-        if spectral_results is not None and spectral_results.get('mode') == 'trials':
-            z = spectral_results['zone_names']
-            theta = spectral_results['theta_power_zones'][t]
-            exp = spectral_results['aperiodic_exponent_zones'][t]
-            off = spectral_results['aperiodic_offset_zones'][t]
+        if spectral_results is not None and spectral_results.get("mode") == "trials":
+            z = spectral_results["zone_names"]
+            theta = spectral_results["theta_power_zones"][t]
+            exp = spectral_results["aperiodic_exponent_zones"][t]
+            off = spectral_results["aperiodic_offset_zones"][t]
             for zi, zn in enumerate(z):
                 row[f"spec_theta_{zn}"] = float(theta[zi])
                 row[f"spec_exp_{zn}"] = float(exp[zi])
                 row[f"spec_off_{zn}"] = float(off[zi])
 
         # wPLI (zones, symmetric)
-        if wpli_results is not None and wpli_results.get('mode') == 'trials':
-            zone_names = wpli_results['zone_names']
-            mat = wpli_results['wpli_trials'][t]
-            row.update(_flatten_symmetric_zone_matrix(mat, zone_names, prefix='wpli'))
+        if wpli_results is not None and wpli_results.get("mode") == "trials":
+            zone_names = wpli_results["zone_names"]
+            mat = wpli_results["wpli_trials"][t]
+            row.update(_flatten_symmetric_zone_matrix(mat, zone_names, prefix="wpli"))
 
         # Permutation entropy (zones x trials)
-        if pe_results is not None and 'pe_matrix_zones' in pe_results:
-            zone_names = pe_results['zone_names']
-            pe_vals = pe_results['pe_matrix_zones'][:, t]
+        if pe_results is not None and "pe_matrix_zones" in pe_results:
+            zone_names = pe_results["zone_names"]
+            pe_vals = pe_results["pe_matrix_zones"][:, t]
             for zi, zn in enumerate(zone_names):
                 row[f"pe_{zn}"] = float(pe_vals[zi])
 
         # LZC (zones x trials)
-        if lzc_results is not None and 'lzc_matrix_zones' in lzc_results:
-            zone_names = lzc_results['zone_names']
-            lzc_vals = lzc_results['lzc_matrix_zones'][:, t]
+        if lzc_results is not None and "lzc_matrix_zones" in lzc_results:
+            zone_names = lzc_results["zone_names"]
+            lzc_vals = lzc_results["lzc_matrix_zones"][:, t]
             for zi, zn in enumerate(zone_names):
                 row[f"lzc_{zn}"] = float(lzc_vals[zi])
 
         # Transfer entropy (trials x zones x zones)
-        if te_results is not None and 'te_mean_lag' in te_results:
-            zone_names = te_results['zone_names']
-            te_mat = te_results['te_mean_lag'][t]
-            row.update(_flatten_directed_zone_matrix(te_mat, zone_names, prefix='te', include_self=False))
+        if te_results is not None and "te_mean_lag" in te_results:
+            zone_names = te_results["zone_names"]
+            te_mat = te_results["te_mean_lag"][t]
+            row.update(_flatten_directed_zone_matrix(te_mat, zone_names, prefix="te", include_self=False))
 
         # wSMI (zones x zones x trials) if available
-        if wsmi_results is not None and 'wsmi_matrix' in wsmi_results and wsmi_results.get('trial_mode') != 'all':
-            zone_names = wsmi_results['zone_names']
-            wsmi_mat = wsmi_results['wsmi_matrix'][:, :, t]
-            row.update(_flatten_symmetric_zone_matrix(wsmi_mat, zone_names, prefix='wsmi'))
+        if wsmi_results is not None and "wsmi_matrix" in wsmi_results and wsmi_results.get("trial_mode") != "all":
+            zone_names = wsmi_results["zone_names"]
+            wsmi_mat = wsmi_results["wsmi_matrix"][:, :, t]
+            row.update(_flatten_symmetric_zone_matrix(wsmi_mat, zone_names, prefix="wsmi"))
 
         rows.append(row)
 
     return rows
+
 
 def append_trials_to_excel(df_new: pd.DataFrame, out_path: str | Path):
     """Append rows to a single Excel file, overwriting rows with same (subject, band, condition)."""
@@ -1184,7 +1564,7 @@ def append_trials_to_excel(df_new: pd.DataFrame, out_path: str | Path):
 
     if out_path.exists():
         try:
-            df_old = pd.read_excel(out_path, engine='openpyxl')
+            df_old = pd.read_excel(out_path, engine="openpyxl")
         except Exception:
             df_old = pd.DataFrame()
     else:
@@ -1194,39 +1574,45 @@ def append_trials_to_excel(df_new: pd.DataFrame, out_path: str | Path):
         df_combined = df_new.copy()
     else:
         # Ensure required columns exist
-        for col in ['subject', 'band', 'condition']:
+        for col in ["subject", "band", "condition"]:
             if col not in df_old.columns:
                 df_old[col] = np.nan
 
         df_keep = df_old
-        keys = df_new[['subject', 'band', 'condition']].drop_duplicates()
+        keys = df_new[["subject", "band", "condition"]].drop_duplicates()
         for _, r in keys.iterrows():
             mask = (
-                (df_keep['subject'] == r['subject'])
-                & (df_keep['band'] == r['band'])
-                & (df_keep['condition'] == r['condition'])
+                (df_keep["subject"] == r["subject"])
+                & (df_keep["band"] == r["band"])
+                & (df_keep["condition"] == r["condition"])
             )
             df_keep = df_keep.loc[~mask]
 
         df_combined = pd.concat([df_keep, df_new], ignore_index=True)
 
     # Stable column ordering: audit first
-    audit_cols = ['subject', 'band', 'condition', 'trial_index', 'start_sample', 'end_sample', 'n_samples', 'start_s', 'end_s', 'sfreq']
+    audit_cols = [
+        "subject",
+        "band",
+        "condition",
+        "trial_index",
+        "start_sample",
+        "end_sample",
+        "n_samples",
+        "start_s",
+        "end_s",
+        "sfreq",
+    ]
     other_cols = [c for c in df_combined.columns if c not in audit_cols]
     df_combined = df_combined[audit_cols + sorted(other_cols)]
 
-    with pd.ExcelWriter(out_path, engine='openpyxl', mode='w') as writer:
-        df_combined.to_excel(writer, index=False, sheet_name='trials')
+    with pd.ExcelWriter(out_path, engine="openpyxl", mode="w") as writer:
+        df_combined.to_excel(writer, index=False, sheet_name="trials")
 
     return out_path
 
-def _extract_trials_from_status(
-    raw,
-    status_channel,
-    trial_mode,
-    status_start_code=1,
-    status_end_code=0,
-):
+
+def _extract_trials_from_status(raw, status_channel, trial_mode, status_start_code=1, status_end_code=0):
     """
     Extract trial boundaries from a status/trigger channel.
 
@@ -1307,8 +1693,7 @@ def _extract_trials_from_status(
             return None
 
         # Detect STARTS as transitions into status_start_code (robust to pulses)
-        start_mask = (status_int[1:] == int(status_start_code)) & (
-            status_int[:-1] != int(status_start_code))
+        start_mask = (status_int[1:] == int(status_start_code)) & (status_int[:-1] != int(status_start_code))
         start_idxs = np.where(start_mask)[0] + 1
         if start_idxs.size == 0:
             return None
@@ -1323,7 +1708,7 @@ def _extract_trials_from_status(
             if e > s:
                 events.append((int(s), e))
                 start_values.append(int(status_int[s]))
-                end_values.append(int(status_int[e-1]) if e-1 >= 0 else 0)
+                end_values.append(int(status_int[e - 1]) if e - 1 >= 0 else 0)
             end_ptr += 1
     else:
         # End at an explicit marker code (use impulses: 0->nonzero transitions)
@@ -1336,7 +1721,9 @@ def _extract_trials_from_status(
         end_positions_sorted = end_positions  # already sorted by time
         for p in start_positions:
             # advance end_ptr until we find an end after this start
-            while end_ptr < end_positions_sorted.size and impulse_idxs[end_positions_sorted[end_ptr]] <= impulse_idxs[p]:
+            while (
+                end_ptr < end_positions_sorted.size and impulse_idxs[end_positions_sorted[end_ptr]] <= impulse_idxs[p]
+            ):
                 end_ptr += 1
             if end_ptr >= end_positions_sorted.size:
                 break
@@ -1355,7 +1742,7 @@ def _extract_trials_from_status(
     # Trial selection (kept for backward compatibility):
     # - 'average' and 'all' keep all events
     # - numeric selects trials with matching start value
-    if trial_mode in ('average', 'all'):
+    if trial_mode in ("average", "all"):
         selected_indices = list(range(len(events)))
     else:
         try:
@@ -1366,8 +1753,7 @@ def _extract_trials_from_status(
         if cond is None:
             selected_indices = list(range(len(events)))
         else:
-            selected_indices = [i for i, v in enumerate(
-                start_values) if v == cond]
+            selected_indices = [i for i, v in enumerate(start_values) if v == cond]
 
         if len(selected_indices) == 0:
             print(f"  WARNING: No trials found with start value {trial_mode}")
@@ -1379,25 +1765,25 @@ def _extract_trials_from_status(
     trial_end_vals = [end_values[i] for i in selected_indices]
 
     return {
-        'trial_indices': selected_indices,
-        'trial_starts': trial_starts,
-        'trial_ends': trial_ends,
-        'trial_values': trial_vals,
-        'trial_end_values': trial_end_vals,
-        'n_trials': len(selected_indices)
+        "trial_indices": selected_indices,
+        "trial_starts": trial_starts,
+        "trial_ends": trial_ends,
+        "trial_values": trial_vals,
+        "trial_end_values": trial_end_vals,
+        "n_trials": len(selected_indices),
     }
+
 
 # -----------------------------------------------------------------------------
 # Efficient wSMI implementation (symbolize once per channel per trial)
 # -----------------------------------------------------------------------------
 _WSMI_CACHE = {}
 
+
 def _get_wsmi_lookup_and_weights(embedding_dim: int):
     """Precompute symbol lookup (MATLAB-style) and wSMI weights for a given embedding_dim."""
     if embedding_dim in _WSMI_CACHE:
         return _WSMI_CACHE[embedding_dim]
-
-    from itertools import permutations
 
     # Generate all permutations (1-based, sorted like MATLAB)
     all_perms = list(permutations(range(1, embedding_dim + 1)))
@@ -1415,7 +1801,7 @@ def _get_wsmi_lookup_and_weights(embedding_dim: int):
     n_symbols = int(np.prod(np.arange(1, embedding_dim + 1)))  # factorial(m)
 
     # Vectorized code->index lookup table
-    max_code = int(''.join(str(i) for i in range(embedding_dim, 0, -1)))  # e.g., 321 for m=3
+    max_code = int("".join(str(i) for i in range(embedding_dim, 0, -1)))  # e.g., 321 for m=3
     lookup = np.full(max_code + 1, -1, dtype=int)
     for idx, c in enumerate(codes):
         if c <= max_code:
@@ -1430,6 +1816,7 @@ def _get_wsmi_lookup_and_weights(embedding_dim: int):
     _WSMI_CACHE[embedding_dim] = (lookup, adjust, n_symbols, weights)
     return _WSMI_CACHE[embedding_dim]
 
+
 def _symbolize_all_channels(data_sel: np.ndarray, embedding_dim: int, tau: int, lookup: np.ndarray, adjust: np.ndarray):
     """Symbolize all channels (rows) once, MATLAB-compatible ordinal patterns."""
     n_ch, n_t = data_sel.shape
@@ -1443,8 +1830,8 @@ def _symbolize_all_channels(data_sel: np.ndarray, embedding_dim: int, tau: int, 
     # embedding_dim is small (typically 3), so a Python loop over channels is OK.
     for ch in range(n_ch):
         x = data_sel[ch]
-        emb = np.stack([x[i * tau: i * tau + n_samples] for i in range(embedding_dim)], axis=1)
-        perm = np.argsort(emb, axis=1, kind='mergesort') + 1  # 1..m
+        emb = np.stack([x[i * tau : i * tau + n_samples] for i in range(embedding_dim)], axis=1)
+        perm = np.argsort(emb, axis=1, kind="mergesort") + 1  # 1..m
         code = (perm * adjust).sum(axis=1).astype(int)
 
         # Map decimal code -> symbol index
@@ -1459,6 +1846,7 @@ def _symbolize_all_channels(data_sel: np.ndarray, embedding_dim: int, tau: int, 
 
     return symbols
 
+
 def _marginals_from_symbols(symbols: np.ndarray, n_symbols: int):
     """Compute marginal probabilities per channel from symbol sequences."""
     n_ch, n_samp = symbols.shape
@@ -1467,15 +1855,19 @@ def _marginals_from_symbols(symbols: np.ndarray, n_symbols: int):
         marg[ch] = np.bincount(symbols[ch].astype(int), minlength=n_symbols) / float(n_samp)
     return marg
 
-def _wsmi_from_symbols(sym_x: np.ndarray, sym_y: np.ndarray, p_x: np.ndarray, p_y: np.ndarray, weights: np.ndarray, n_symbols: int):
+
+def _wsmi_from_symbols(
+    sym_x: np.ndarray, sym_y: np.ndarray, p_x: np.ndarray, p_y: np.ndarray, weights: np.ndarray, n_symbols: int
+):
     """Compute wSMI between two channels given their symbol sequences and marginals."""
     L = min(len(sym_x), len(sym_y))
     if L <= 0:
         return np.nan
 
     # Joint probability via 1D bincount
-    joint = np.bincount((sym_x[:L].astype(int) * n_symbols + sym_y[:L].astype(int)),
-                        minlength=n_symbols * n_symbols).reshape(n_symbols, n_symbols) / float(L)
+    joint = np.bincount(
+        (sym_x[:L].astype(int) * n_symbols + sym_y[:L].astype(int)), minlength=n_symbols * n_symbols
+    ).reshape(n_symbols, n_symbols) / float(L)
 
     denom = np.outer(p_x, p_y)
     mask = (joint > 0) & (denom > 0) & (weights > 0)
@@ -1486,6 +1878,7 @@ def _wsmi_from_symbols(sym_x: np.ndarray, sym_y: np.ndarray, p_x: np.ndarray, p_
     wsmi = np.sum(weights[mask] * joint[mask] * np.log(joint[mask] / denom[mask]))
     wsmi = wsmi / np.log(n_symbols)
     return float(wsmi)
+
 
 def _calculate_wsmi_matrix(data, flat_indices, embedding_dim, tau, debug, total_pairs):
     """Calculate wSMI for all channel pairs (symbolize once per channel)."""
@@ -1506,9 +1899,9 @@ def _calculate_wsmi_matrix(data, flat_indices, embedding_dim, tau, debug, total_
     pair_count = 0
     for i in range(n_selected):
         for j in range(i + 1, n_selected):
-            debug_this = (pair_count == 0 and debug)
+            debug_this = pair_count == 0 and debug
             if debug_this:
-                print(f"\n>>> wSMI DEBUG (first pair) <<<")
+                print("\n>>> wSMI DEBUG (first pair) <<<")
                 print(f"  embedding_dim={embedding_dim} | tau={tau} | n_symbols={n_symbols}")
                 print(f"  samples used for symbols: {symbols.shape[1]}")
                 # Simple sanity checks
@@ -1531,6 +1924,7 @@ def _calculate_wsmi_matrix(data, flat_indices, embedding_dim, tau, debug, total_
 
     return wsmi_all
 
+
 def _aggregate_to_zones(wsmi_all, flat_indices, channel_to_zone, zone_names):
     """Aggregate channel-level wSMI to zone-level."""
     n_zones = len(zone_names)
@@ -1538,10 +1932,8 @@ def _aggregate_to_zones(wsmi_all, flat_indices, channel_to_zone, zone_names):
 
     for i, zone_i in enumerate(zone_names):
         for j, zone_j in enumerate(zone_names):
-            local_indices_i = [k for k, idx in enumerate(flat_indices)
-                               if channel_to_zone[idx] == zone_i]
-            local_indices_j = [k for k, idx in enumerate(flat_indices)
-                               if channel_to_zone[idx] == zone_j]
+            local_indices_i = [k for k, idx in enumerate(flat_indices) if channel_to_zone[idx] == zone_i]
+            local_indices_j = [k for k, idx in enumerate(flat_indices) if channel_to_zone[idx] == zone_j]
 
             zone_wsmi_values = []
 
@@ -1562,20 +1954,22 @@ def _aggregate_to_zones(wsmi_all, flat_indices, channel_to_zone, zone_names):
 
     return wsmi_matrix
 
+
 def _print_matrix(matrix, zone_names):
     """Pretty print connectivity matrix."""
     n_zones = len(zone_names)
-    #print(f"{'':15s}", end='')
+    # print(f"{'':15s}", end='')
     for name in zone_names:
-        #print(f"{name:>12s}", end='')
+        # print(f"{name:>12s}", end='')
         continue
-    #print()
+    # print()
 
     # for i, name_i in enumerate(zone_names):
     #     print(f"{name_i:15s}", end='')
     #     for j in range(n_zones):
     #         print(f"{matrix[i, j]:12.4f}", end='')
     #     print()
+
 
 # ============================================================================
 # COMPLEXITY/ENTROPY - LEMPEL-ZIV COMPLEXITY (LZC)
@@ -1629,21 +2023,22 @@ def _lz78_complexity(binary_seq):
 
     # Convert to string if array
     if not isinstance(binary_seq, str):
-        binary_seq = ''.join(str(int(b)) for b in binary_seq)
+        binary_seq = "".join(str(int(b)) for b in binary_seq)
 
     # LZ78 algorithm: build dictionary of unique substrings
     dictionary = set()  # Set of all unique patterns seen
-    w = ''  # Current word being built
+    w = ""  # Current word being built
 
     # Scan through sequence character by character
     for ch in binary_seq:
         w = w + ch  # Append character to current word
         if w not in dictionary:  # New pattern found
             dictionary.add(w)  # Add to dictionary
-            w = ''  # Reset current word
+            w = ""  # Reset current word
 
     # Return dictionary size = number of unique patterns
     return len(dictionary)
+
 
 def lempel_ziv_complexity(
     raw,
@@ -1698,16 +2093,15 @@ def lempel_ziv_complexity(
         Common:
             - 'zone_names', 'zone_channels', 'channel_names', 'trial_bounds' (if trials)
     """
-    import numpy as np
     import mne
+    import numpy as np
 
     # ---------------------------
     # Helper: extract impulses from Status channel (0 -> nonzero transitions)
     # ---------------------------
     def _get_status_impulses(raw_obj, ch_name):
         if ch_name not in raw_obj.ch_names:
-            raise ValueError(
-                f"status_channel='{ch_name}' not found in raw.ch_names")
+            raise ValueError(f"status_channel='{ch_name}' not found in raw.ch_names")
         status = raw_obj.copy().pick_channels([ch_name]).get_data()[0]
         s = np.round(status).astype(int)
         # Mask to 16-bit to avoid spurious 65536 (BioSemi)
@@ -1750,52 +2144,160 @@ def lempel_ziv_complexity(
     # ---------------------------
     # Zones definition
     # ---------------------------
-    zone_names = ['frontal', 'temporal_L',
-                  'temporal_R', 'occipital', 'central']
+    zone_names = ["frontal", "temporal_L", "temporal_R", "occipital", "central"]
     zones = {
-        'frontal': [
-            "C8", "C9", "C10", "C12", "C13", "C14", "C15", "C16", "C17", "C18",
-            "C19", "C20", "C21", "C25", "C26", "C27", "C28", "C29", "C30", "C31", "C32"
+        "frontal": [
+            "C8",
+            "C9",
+            "C10",
+            "C12",
+            "C13",
+            "C14",
+            "C15",
+            "C16",
+            "C17",
+            "C18",
+            "C19",
+            "C20",
+            "C21",
+            "C25",
+            "C26",
+            "C27",
+            "C28",
+            "C29",
+            "C30",
+            "C31",
+            "C32",
         ],
-        'temporal_L': [
-            "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D21", "D22",
-            "D23", "D24", "D25", "D26", "D29", "D30", "D31", "D32"
+        "temporal_L": [
+            "D4",
+            "D5",
+            "D6",
+            "D7",
+            "D8",
+            "D9",
+            "D10",
+            "D11",
+            "D21",
+            "D22",
+            "D23",
+            "D24",
+            "D25",
+            "D26",
+            "D29",
+            "D30",
+            "D31",
+            "D32",
         ],
-        'temporal_R': [
-            "C4", "C5", "C6", "C7", "B10", "B11", "B12", "B13", "B14", "B15",
-            "B16", "B24", "B25", "B26", "B27", "B28", "B29", "B30"
+        "temporal_R": [
+            "C4",
+            "C5",
+            "C6",
+            "C7",
+            "B10",
+            "B11",
+            "B12",
+            "B13",
+            "B14",
+            "B15",
+            "B16",
+            "B24",
+            "B25",
+            "B26",
+            "B27",
+            "B28",
+            "B29",
+            "B30",
         ],
-        'occipital': [
-            "A8", "A9", "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17",
-            "A18", "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28",
-            "A29", "A30", "A31", "B5", "B6", "B7", "B8", "B9"
+        "occipital": [
+            "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A20",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A25",
+            "A26",
+            "A27",
+            "A28",
+            "A29",
+            "A30",
+            "A31",
+            "B5",
+            "B6",
+            "B7",
+            "B8",
+            "B9",
         ],
-        'central': [
-            "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A19", "A32", "B1",
-            "B2", "B3", "B4", "B17", "B18", "B19", "B20", "B21", "B22", "B23",
-            "B31", "B32", "C1", "C2", "C3", "C11", "C22", "C23", "C24", "D1",
-            "D2", "D3", "D12", "D13", "D14", "D15", "D16", "D17", "D18", "D19",
-            "D20", "D27", "D28"
-        ]
+        "central": [
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A19",
+            "A32",
+            "B1",
+            "B2",
+            "B3",
+            "B4",
+            "B17",
+            "B18",
+            "B19",
+            "B20",
+            "B21",
+            "B22",
+            "B23",
+            "B31",
+            "B32",
+            "C1",
+            "C2",
+            "C3",
+            "C11",
+            "C22",
+            "C23",
+            "C24",
+            "D1",
+            "D2",
+            "D3",
+            "D12",
+            "D13",
+            "D14",
+            "D15",
+            "D16",
+            "D17",
+            "D18",
+            "D19",
+            "D20",
+            "D27",
+            "D28",
+        ],
     }
     # ---------------------------
     # Filter (continuous) if necessary
     # ---------------------------
-    if (
-        raw.info.get('highpass', None) != freq_range[0]
-        or raw.info.get('lowpass', None) != freq_range[1]
-    ):
+    if raw.info.get("highpass", None) != freq_range[0] or raw.info.get("lowpass", None) != freq_range[1]:
         raw_filt = raw.copy()
-        raw_filt.filter(
-            l_freq=freq_range[0], h_freq=freq_range[1],
-            picks='eeg', method='iir', verbose=False
-        )
+        raw_filt.filter(l_freq=freq_range[0], h_freq=freq_range[1], picks="eeg", method="iir", verbose=False)
     else:
         raw_filt = raw
 
     # EEG picks and data aligned
-    eeg_picks = mne.pick_types(raw_filt.info, eeg=True, meg=False, stim=False, eog=False,
-                               ecg=False, emg=False, exclude=[])
+    eeg_picks = mne.pick_types(
+        raw_filt.info, eeg=True, meg=False, stim=False, eog=False, ecg=False, emg=False, exclude=[]
+    )
     eeg_ch_names = [raw_filt.ch_names[i] for i in eeg_picks]
     data = raw_filt.get_data(picks=eeg_picks)  # (n_eeg, n_time)
 
@@ -1817,7 +2319,7 @@ def lempel_ziv_complexity(
 
         for ch_idx in range(data.shape[0]):
             signal = data[ch_idx, :]
-            signal_detrended = detrend(signal, type='linear')
+            signal_detrended = detrend(signal, type="linear")
             binary_signal = (signal_detrended > 0).astype(int)
             c = _lz78_complexity(binary_signal)
             lzc_per_channel[ch_idx] = c * np.log2(n_timepoints) / n_timepoints
@@ -1825,31 +2327,27 @@ def lempel_ziv_complexity(
         lzc_per_zone = np.full(len(zone_names), np.nan, dtype=float)
         for zi, zone_name in enumerate(zone_names):
             idxs = zone_indices[zone_name]
-            lzc_per_zone[zi] = np.nanmean(
-                lzc_per_channel[idxs]) if len(idxs) else np.nan
+            lzc_per_zone[zi] = np.nanmean(lzc_per_channel[idxs]) if len(idxs) else np.nan
 
         return {
-            'lzc_values': lzc_per_zone,
-            'lzc_per_channel': lzc_per_channel,
-            'zone_names': zone_names,
-            'zone_channels': zone_channels,
-            'channel_names': eeg_ch_names,
+            "lzc_values": lzc_per_zone,
+            "lzc_per_channel": lzc_per_channel,
+            "zone_names": zone_names,
+            "zone_channels": zone_channels,
+            "channel_names": eeg_ch_names,
         }
 
     # ---------------------------
-    # Trials mode 
+    # Trials mode
     # ---------------------------
     # Build trials from raw (unfiltered is fine for markers); indices apply to raw_filt data
     idx, vals = _get_status_impulses(raw, status_channel)
-    trials = _build_trials(idx, vals, int(
-        status_start_code), int(status_end_code))
+    trials = _build_trials(idx, vals, int(status_start_code), int(status_end_code))
     n_trials = len(trials)
     if n_trials == 0:
-        raise RuntimeError(
-            "No trials detected with the provided status_start_code/status_end_code.")
+        raise RuntimeError("No trials detected with the provided status_start_code/status_end_code.")
 
-    lzc_matrix_channels = np.full(
-        (data.shape[0], n_trials), np.nan, dtype=float)
+    lzc_matrix_channels = np.full((data.shape[0], n_trials), np.nan, dtype=float)
 
     for ti, (start, end, end_val) in enumerate(trials):
         # Slice trial segment
@@ -1860,35 +2358,34 @@ def lempel_ziv_complexity(
 
         for ch_idx in range(seg.shape[0]):
             signal = seg[ch_idx, :]
-            signal_detrended = detrend(signal, type='linear')
+            signal_detrended = detrend(signal, type="linear")
             binary_signal = (signal_detrended > 0).astype(int)
             c = _lz78_complexity(binary_signal)
             lzc_matrix_channels[ch_idx, ti] = c * np.log2(N) / N
 
     # Zone aggregation per trial
-    lzc_matrix_zones = np.full(
-        (len(zone_names), n_trials), np.nan, dtype=float)
+    lzc_matrix_zones = np.full((len(zone_names), n_trials), np.nan, dtype=float)
     for zi, zone_name in enumerate(zone_names):
         idxs = zone_indices[zone_name]
         if len(idxs) == 0:
             continue
-        lzc_matrix_zones[zi, :] = np.nanmean(
-            lzc_matrix_channels[idxs, :], axis=0)
+        lzc_matrix_zones[zi, :] = np.nanmean(lzc_matrix_channels[idxs, :], axis=0)
 
     results = {
-        'lzc_matrix_channels': lzc_matrix_channels,
-        'lzc_matrix_zones': lzc_matrix_zones,
-        'zone_names': zone_names,
-        'zone_channels': zone_channels,
-        'channel_names': eeg_ch_names,
-        'trial_bounds': trials,  # list of (start, end, end_code)
+        "lzc_matrix_channels": lzc_matrix_channels,
+        "lzc_matrix_zones": lzc_matrix_zones,
+        "zone_names": zone_names,
+        "zone_channels": zone_channels,
+        "channel_names": eeg_ch_names,
+        "trial_bounds": trials,  # list of (start, end, end_code)
     }
 
     if trial_mode == "average":
-        results['lzc_avg'] = np.nanmean(lzc_matrix_zones, axis=1)
-        results['lzc_std'] = np.nanstd(lzc_matrix_zones, axis=1)
+        results["lzc_avg"] = np.nanmean(lzc_matrix_zones, axis=1)
+        results["lzc_std"] = np.nanstd(lzc_matrix_zones, axis=1)
 
     return results
+
 
 def permutation_entropy(
     raw,
@@ -1898,7 +2395,7 @@ def permutation_entropy(
     status_channel="Status",
     status_start_code=None,
     status_end_code=-1,
-    trial_mode="average",   # 'continuous' | 'trials' | 'average'
+    trial_mode="average",  # 'continuous' | 'trials' | 'average'
     min_samples=200,
 ):
     """
@@ -1944,44 +2441,158 @@ def permutation_entropy(
           - pe_matrix_zones (n_zones, n_trials)
           - pe_avg / pe_std (n_zones,) if trial_mode == 'average'
     """
-    import numpy as np
-    import mne
     import math
-    from itertools import permutations
+
+    import mne
+    import numpy as np
 
     # ---- zones ----
     zones = {
-        'frontal': [
-            "C8", "C9", "C10", "C12", "C13", "C14", "C15", "C16", "C17", "C18",
-            "C19", "C20", "C21", "C25", "C26", "C27", "C28", "C29", "C30", "C31", "C32"
+        "frontal": [
+            "C8",
+            "C9",
+            "C10",
+            "C12",
+            "C13",
+            "C14",
+            "C15",
+            "C16",
+            "C17",
+            "C18",
+            "C19",
+            "C20",
+            "C21",
+            "C25",
+            "C26",
+            "C27",
+            "C28",
+            "C29",
+            "C30",
+            "C31",
+            "C32",
         ],
-        'temporal_L': [
-            "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D21", "D22",
-            "D23", "D24", "D25", "D26", "D29", "D30", "D31", "D32"
+        "temporal_L": [
+            "D4",
+            "D5",
+            "D6",
+            "D7",
+            "D8",
+            "D9",
+            "D10",
+            "D11",
+            "D21",
+            "D22",
+            "D23",
+            "D24",
+            "D25",
+            "D26",
+            "D29",
+            "D30",
+            "D31",
+            "D32",
         ],
-        'temporal_R': [
-            "C4", "C5", "C6", "C7", "B10", "B11", "B12", "B13", "B14", "B15",
-            "B16", "B24", "B25", "B26", "B27", "B28", "B29", "B30"
+        "temporal_R": [
+            "C4",
+            "C5",
+            "C6",
+            "C7",
+            "B10",
+            "B11",
+            "B12",
+            "B13",
+            "B14",
+            "B15",
+            "B16",
+            "B24",
+            "B25",
+            "B26",
+            "B27",
+            "B28",
+            "B29",
+            "B30",
         ],
-        'occipital': [
-            "A8", "A9", "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17",
-            "A18", "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28",
-            "A29", "A30", "A31", "B5", "B6", "B7", "B8", "B9"
+        "occipital": [
+            "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A20",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A25",
+            "A26",
+            "A27",
+            "A28",
+            "A29",
+            "A30",
+            "A31",
+            "B5",
+            "B6",
+            "B7",
+            "B8",
+            "B9",
         ],
-        'central': [
-            "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A19", "A32", "B1",
-            "B2", "B3", "B4", "B17", "B18", "B19", "B20", "B21", "B22", "B23",
-            "B31", "B32", "C1", "C2", "C3", "C11", "C22", "C23", "C24", "D1",
-            "D2", "D3", "D12", "D13", "D14", "D15", "D16", "D17", "D18", "D19",
-            "D20", "D27", "D28"
-        ]
+        "central": [
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A19",
+            "A32",
+            "B1",
+            "B2",
+            "B3",
+            "B4",
+            "B17",
+            "B18",
+            "B19",
+            "B20",
+            "B21",
+            "B22",
+            "B23",
+            "B31",
+            "B32",
+            "C1",
+            "C2",
+            "C3",
+            "C11",
+            "C22",
+            "C23",
+            "C24",
+            "D1",
+            "D2",
+            "D3",
+            "D12",
+            "D13",
+            "D14",
+            "D15",
+            "D16",
+            "D17",
+            "D18",
+            "D19",
+            "D20",
+            "D27",
+            "D28",
+        ],
     }
     zone_names = list(zones.keys())
     n_zones = len(zone_names)
 
     # ---- tau (MATLAB-like) ----
     if tau is None:
-        fs = float(raw.info['sfreq'])
+        fs = float(raw.info["sfreq"])
         tau = int(round(fs / embedding_dim / band_range[1]))
 
     n_symbols = math.factorial(int(embedding_dim))
@@ -1995,12 +2606,9 @@ def permutation_entropy(
     for i in range(n_perm // 2):
         all_perms[n_perm - i - 1] = tuple(reversed(all_perms[i]))
 
-    adjust = [10 ** (int(embedding_dim) - 1 - i)
-              for i in range(int(embedding_dim))]
-    symbols = [sum(int(p) * a for p, a in zip(perm, adjust))
-               for perm in all_perms]
-    code_to_idx = {int(code): idx for idx,
-                   code in enumerate(symbols)}  # 0..m!-1
+    adjust = [10 ** (int(embedding_dim) - 1 - i) for i in range(int(embedding_dim))]
+    symbols = [sum(int(p) * a for p, a in zip(perm, adjust)) for perm in all_perms]
+    code_to_idx = {int(code): idx for idx, code in enumerate(symbols)}  # 0..m!-1
 
     def _symbolize_1d(seg_1d: np.ndarray) -> np.ndarray:
         """Return 0-based symbol indices for a 1D segment (MATLAB sort-permutation)."""
@@ -2038,18 +2646,12 @@ def permutation_entropy(
 
     # ---- filter (band) ----
     raw_theta = raw.copy()
-    raw_theta.filter(
-        l_freq=band_range[0],
-        h_freq=band_range[1],
-        picks='eeg',
-        method='fir',
-        phase='zero',
-        verbose=False
-    )
+    raw_theta.filter(l_freq=band_range[0], h_freq=band_range[1], picks="eeg", method="fir", phase="zero", verbose=False)
 
     # ---- EEG-only picks and mapping (fix channel-index bug) ----
-    eeg_picks = mne.pick_types(raw_theta.info, eeg=True, meg=False,
-                               stim=False, eog=False, ecg=False, emg=False, exclude=[])
+    eeg_picks = mne.pick_types(
+        raw_theta.info, eeg=True, meg=False, stim=False, eog=False, ecg=False, emg=False, exclude=[]
+    )
     eeg_names = [raw_theta.ch_names[i] for i in eeg_picks]
     data = raw_theta.get_data(picks=eeg_picks)  # (n_eeg, n_times)
 
@@ -2062,8 +2664,7 @@ def permutation_entropy(
 
     # ---- mode: continuous ----
     if (trial_mode == "continuous") or (status_start_code is None) or (status_channel not in raw_theta.ch_names):
-        pe_per_channel = np.array([_pe_from_segment(data[ch, :])
-                                  for ch in range(data.shape[0])], dtype=float)
+        pe_per_channel = np.array([_pe_from_segment(data[ch, :]) for ch in range(data.shape[0])], dtype=float)
         pe_per_zone = np.full((n_zones,), np.nan, dtype=float)
         for zi, zn in enumerate(zone_names):
             idx = zone_indices[zn]
@@ -2103,12 +2704,10 @@ def permutation_entropy(
 
     trial_starts = np.array(trials_info["trial_starts"], dtype=int)
     trial_ends = np.array(trials_info["trial_ends"], dtype=int)
-    trial_end_vals = trials_info.get(
-        "trial_end_values", [None] * len(trial_starts))
+    trial_end_vals = trials_info.get("trial_end_values", [None] * len(trial_starts))
     n_trials = int(len(trial_starts))
 
-    pe_trials_channels = np.full(
-        (data.shape[0], n_trials), np.nan, dtype=float)
+    pe_trials_channels = np.full((data.shape[0], n_trials), np.nan, dtype=float)
 
     for t_i in range(n_trials):
         s = int(trial_starts[t_i])
@@ -2123,8 +2722,7 @@ def permutation_entropy(
     for zi, zn in enumerate(zone_names):
         idx = zone_indices[zn]
         if idx:
-            pe_trials_zones[zi, :] = np.nanmean(
-                pe_trials_channels[idx, :], axis=0)
+            pe_trials_zones[zi, :] = np.nanmean(pe_trials_channels[idx, :], axis=0)
 
     results = {
         "pe_matrix_channels": pe_trials_channels,
@@ -2142,6 +2740,7 @@ def permutation_entropy(
         results["pe_std"] = np.nanstd(pe_trials_zones, axis=1)
 
     return results
+
 
 def ctransform(x):
     """
@@ -2192,6 +2791,7 @@ def ctransform(x):
     cx = (xr + 1).astype(np.float64) / (xr.shape[-1] + 1)
 
     return cx
+
 
 def copnorm(x):
     """
@@ -2252,13 +2852,14 @@ def copnorm(x):
 
     return cx
 
+
 def cmi_ggg(x, y, z, biascorrect=True, demeaned=False):
     """
     Conditional Mutual Information (CMI) between Gaussian variables.
 
     WHAT IT MEASURES:
     -----------------
-    CMI(X; Y | Z) = How much information X provides about Y, 
+    CMI(X; Y | Z) = How much information X provides about Y,
                     given that we already know Z
 
     In other words:
@@ -2274,7 +2875,7 @@ def cmi_ggg(x, y, z, biascorrect=True, demeaned=False):
 
     Where H() is entropy (uncertainty):
     - H(X,Z): Joint entropy of X and Z
-    - H(Y,Z): Joint entropy of Y and Z  
+    - H(Y,Z): Joint entropy of Y and Z
     - H(X,Y,Z): Joint entropy of all three
     - H(Z): Entropy of conditioning variable
 
@@ -2307,7 +2908,7 @@ def cmi_ggg(x, y, z, biascorrect=True, demeaned=False):
         - Columns = different observations/timepoints
         For Transfer Entropy:
           x = past of source signal
-          y = future of target signal  
+          y = future of target signal
           z = past of target signal
 
     biascorrect : bool, default=True
@@ -2347,12 +2948,12 @@ def cmi_ggg(x, y, z, biascorrect=True, demeaned=False):
     >>> x = np.random.randn(1, 1000)  # Past of signal 1
     >>> z = np.random.randn(1, 1000)  # Past of signal 2
     >>> y = 0.5*x + 0.3*z + 0.2*np.random.randn(1, 1000)  # Future of signal 2
-    >>> 
+    >>>
     >>> # Normalize with copula
     >>> x_norm = copnorm(x)
     >>> y_norm = copnorm(y)
     >>> z_norm = copnorm(z)
-    >>> 
+    >>>
     >>> # Calculate CMI
     >>> cmi = cmi_ggg(x_norm, y_norm, z_norm, biascorrect=True, demeaned=True)
     >>> print(f"CMI = {cmi:.4f} bits")
@@ -2438,15 +3039,14 @@ def cmi_ggg(x, y, z, biascorrect=True, demeaned=False):
     if biascorrect:
         # Correction uses psi (digamma) function
         # Accounts for bias in entropy estimates from finite data
-        psiterms = sp_special.psi(
-            (Ntrl - np.arange(1, Nvarxyz+1)).astype(np.float64)/2.0) / 2.0
-        dterm = (ln2 - np.log(Ntrl-1.0)) / 2.0
+        psiterms = sp_special.psi((Ntrl - np.arange(1, Nvarxyz + 1)).astype(np.float64) / 2.0) / 2.0
+        dterm = (ln2 - np.log(Ntrl - 1.0)) / 2.0
 
         # Apply correction to each entropy
-        HZ = HZ - Nvarz*dterm - psiterms[:Nvarz].sum()
-        HXZ = HXZ - Nvarxz*dterm - psiterms[:Nvarxz].sum()
-        HYZ = HYZ - Nvaryz*dterm - psiterms[:Nvaryz].sum()
-        HXYZ = HXYZ - Nvarxyz*dterm - psiterms[:Nvarxyz].sum()
+        HZ = HZ - Nvarz * dterm - psiterms[:Nvarz].sum()
+        HXZ = HXZ - Nvarxz * dterm - psiterms[:Nvarxz].sum()
+        HYZ = HYZ - Nvaryz * dterm - psiterms[:Nvaryz].sum()
+        HXYZ = HXYZ - Nvarxyz * dterm - psiterms[:Nvarxyz].sum()
 
     # Calculate CMI using entropy formula
     # CMI(X; Y | Z) = H(X,Z) + H(Y,Z) - H(X,Y,Z) - H(Z)
@@ -2455,9 +3055,11 @@ def cmi_ggg(x, y, z, biascorrect=True, demeaned=False):
 
     return I
 
+
 # ============================================================================
 # Transfer Entropy Function
 # ============================================================================
+
 
 def transfer_entropy(
     raw,
@@ -2524,16 +3126,15 @@ def transfer_entropy(
         - 'maxlag_samples', 'maxlag_ms', 'sfreq'
         - 'errors' : list[dict] with exception info (if any)
     """
-    import numpy as np
     import mne
+    import numpy as np
 
     # ---------------------------
     # Helper: extract impulses from Status channel (0 -> nonzero transitions)
     # ---------------------------
     def _get_status_impulses(raw_obj, ch_name):
         if ch_name not in raw_obj.ch_names:
-            raise ValueError(
-                f"status_channel='{ch_name}' not found in raw.ch_names")
+            raise ValueError(f"status_channel='{ch_name}' not found in raw.ch_names")
         status = raw_obj.copy().pick_channels([ch_name]).get_data()[0]
         s = np.round(status).astype(int)
         # Mask to 16-bit to avoid spurious 65536 (BioSemi)
@@ -2573,8 +3174,7 @@ def transfer_entropy(
         return trials
 
     if status_start_code is None:
-        raise ValueError(
-            "status_start_code must be provided for trial-by-trial TE.")
+        raise ValueError("status_start_code must be provided for trial-by-trial TE.")
 
     sfreq = float(raw.info["sfreq"])
 
@@ -2586,46 +3186,157 @@ def transfer_entropy(
         maxlag_ms = (maxlag_samples / sfreq) * 1000.0
 
     if maxlag_samples < 1:
-        raise ValueError(
-            f"maxlag_samples must be >= 1 (got {maxlag_samples}).")
+        raise ValueError(f"maxlag_samples must be >= 1 (got {maxlag_samples}).")
 
     # ---------------------------
     # Zones definition (same structure used across the pipeline)
     # ---------------------------
-    zone_names = ['frontal', 'temporal_L',
-                  'temporal_R', 'occipital', 'central']
+    zone_names = ["frontal", "temporal_L", "temporal_R", "occipital", "central"]
     zones = {
-        'frontal': [
-            "C8", "C9", "C10", "C12", "C13", "C14", "C15", "C16", "C17", "C18",
-            "C19", "C20", "C21", "C25", "C26", "C27", "C28", "C29", "C30", "C31", "C32"
+        "frontal": [
+            "C8",
+            "C9",
+            "C10",
+            "C12",
+            "C13",
+            "C14",
+            "C15",
+            "C16",
+            "C17",
+            "C18",
+            "C19",
+            "C20",
+            "C21",
+            "C25",
+            "C26",
+            "C27",
+            "C28",
+            "C29",
+            "C30",
+            "C31",
+            "C32",
         ],
-        'temporal_L': [
-            "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D21", "D22",
-            "D23", "D24", "D25", "D26", "D29", "D30", "D31", "D32"
+        "temporal_L": [
+            "D4",
+            "D5",
+            "D6",
+            "D7",
+            "D8",
+            "D9",
+            "D10",
+            "D11",
+            "D21",
+            "D22",
+            "D23",
+            "D24",
+            "D25",
+            "D26",
+            "D29",
+            "D30",
+            "D31",
+            "D32",
         ],
-        'temporal_R': [
-            "C4", "C5", "C6", "C7", "B10", "B11", "B12", "B13", "B14", "B15",
-            "B16", "B24", "B25", "B26", "B27", "B28", "B29", "B30"
+        "temporal_R": [
+            "C4",
+            "C5",
+            "C6",
+            "C7",
+            "B10",
+            "B11",
+            "B12",
+            "B13",
+            "B14",
+            "B15",
+            "B16",
+            "B24",
+            "B25",
+            "B26",
+            "B27",
+            "B28",
+            "B29",
+            "B30",
         ],
-        'occipital': [
-            "A8", "A9", "A10", "A11", "A12", "A13", "A14", "A15", "A16", "A17",
-            "A18", "A20", "A21", "A22", "A23", "A24", "A25", "A26", "A27", "A28",
-            "A29", "A30", "A31", "B5", "B6", "B7", "B8", "B9"
+        "occipital": [
+            "A8",
+            "A9",
+            "A10",
+            "A11",
+            "A12",
+            "A13",
+            "A14",
+            "A15",
+            "A16",
+            "A17",
+            "A18",
+            "A20",
+            "A21",
+            "A22",
+            "A23",
+            "A24",
+            "A25",
+            "A26",
+            "A27",
+            "A28",
+            "A29",
+            "A30",
+            "A31",
+            "B5",
+            "B6",
+            "B7",
+            "B8",
+            "B9",
         ],
-        'central': [
-            "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A19", "A32", "B1",
-            "B2", "B3", "B4", "B17", "B18", "B19", "B20", "B21", "B22", "B23",
-            "B31", "B32", "C1", "C2", "C3", "C11", "C22", "C23", "C24", "D1",
-            "D2", "D3", "D12", "D13", "D14", "D15", "D16", "D17", "D18", "D19",
-            "D20", "D27", "D28"
-        ]
+        "central": [
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "A6",
+            "A7",
+            "A19",
+            "A32",
+            "B1",
+            "B2",
+            "B3",
+            "B4",
+            "B17",
+            "B18",
+            "B19",
+            "B20",
+            "B21",
+            "B22",
+            "B23",
+            "B31",
+            "B32",
+            "C1",
+            "C2",
+            "C3",
+            "C11",
+            "C22",
+            "C23",
+            "C24",
+            "D1",
+            "D2",
+            "D3",
+            "D12",
+            "D13",
+            "D14",
+            "D15",
+            "D16",
+            "D17",
+            "D18",
+            "D19",
+            "D20",
+            "D27",
+            "D28",
+        ],
     }
 
     # ---------------------------
     # EEG-only channel mapping (fixes index misalignment bugs)
     # ---------------------------
-    eeg_picks = mne.pick_types(raw.info, eeg=True, meg=False,
-                               stim=False, eog=False, ecg=False, emg=False, exclude=[])
+    eeg_picks = mne.pick_types(raw.info, eeg=True, meg=False, stim=False, eog=False, ecg=False, emg=False, exclude=[])
     eeg_channel_names = [raw.ch_names[i] for i in eeg_picks]
     data_eeg = raw.get_data(picks=eeg_picks)  # (n_eeg, n_times)
 
@@ -2639,25 +3350,23 @@ def transfer_entropy(
     # Sanity: ensure every zone has at least 1 EEG channel
     empty_zones = [z for z in zone_names if len(zone_indices.get(z, [])) == 0]
     if empty_zones:
-        raise RuntimeError(f"TE: zones with no EEG channels found: {empty_zones}. "
-                           f"Check channel naming / montage vs zones mapping.")
+        raise RuntimeError(
+            f"TE: zones with no EEG channels found: {empty_zones}. Check channel naming / montage vs zones mapping."
+        )
     # ---------------------------
     # Trials from Status impulses
     # ---------------------------
     idx, vals = _get_status_impulses(raw, status_channel)
-    trial_bounds = _build_trials(idx, vals, int(
-        status_start_code), int(status_end_code))
+    trial_bounds = _build_trials(idx, vals, int(status_start_code), int(status_end_code))
 
     if len(trial_bounds) == 0:
-        raise RuntimeError(
-            "No trials detected. Check status codes and Status channel.")
+        raise RuntimeError("No trials detected. Check status codes and Status channel.")
 
     n_trials = len(trial_bounds)
     n_zones = len(zone_names)
 
     # Output arrays
-    te_full = np.full((n_trials, n_zones, n_zones,
-                      maxlag_samples), np.nan, dtype=float)
+    te_full = np.full((n_trials, n_zones, n_zones, maxlag_samples), np.nan, dtype=float)
     te_mean_lag = np.full((n_trials, n_zones, n_zones), np.nan, dtype=float)
 
     errors = []
@@ -2685,14 +3394,19 @@ def transfer_entropy(
                 continue
 
             # Past/future slicing (shape: n_zones x (n_samples - lag))
-            past = zone_ts[:, :n_samples - lag]
+            past = zone_ts[:, : n_samples - lag]
             future = zone_ts[:, lag:]
 
             # Compute pairwise TE (i<j) and fill i->j and j->i
             for i in range(n_zones):
                 for j in range(i + 1, n_zones):
                     # Skip if either zone is NaN-only
-                    if np.all(np.isnan(past[i])) or np.all(np.isnan(past[j])) or np.all(np.isnan(future[i])) or np.all(np.isnan(future[j])):
+                    if (
+                        np.all(np.isnan(past[i]))
+                        or np.all(np.isnan(past[j]))
+                        or np.all(np.isnan(future[i]))
+                        or np.all(np.isnan(future[j]))
+                    ):
                         continue
 
                     try:
@@ -2704,22 +3418,15 @@ def transfer_entropy(
                         y_c = copnorm(y_stack)
 
                         # i -> j : CMI( i_past ; j_future | j_past )
-                        te_ij = cmi_ggg(
-                            x_c[0], y_c[1], x_c[1], biascorrect=biascorrect)
+                        te_ij = cmi_ggg(x_c[0], y_c[1], x_c[1], biascorrect=biascorrect)
                         # j -> i : CMI( j_past ; i_future | i_past )
-                        te_ji = cmi_ggg(
-                            x_c[1], y_c[0], x_c[0], biascorrect=biascorrect)
+                        te_ji = cmi_ggg(x_c[1], y_c[0], x_c[0], biascorrect=biascorrect)
 
                         te_full[t, i, j, lag - 1] = float(te_ij)
                         te_full[t, j, i, lag - 1] = float(te_ji)
 
                     except Exception as e:
-                        errors.append({
-                            "trial": int(t),
-                            "lag": int(lag),
-                            "pair": (int(i), int(j)),
-                            "error": repr(e)
-                        })
+                        errors.append({"trial": int(t), "lag": int(lag), "pair": (int(i), int(j)), "error": repr(e)})
                         # leave NaNs for this pair/lag
                         continue
 
@@ -2758,26 +3465,28 @@ def transfer_entropy(
                 te_std_trials[i_ag, j_ag] = float(np.nanstd(vals))
 
     results = {
-        'te_full': te_full,
-        'te_mean_lag': te_mean_lag,
-        'te_matrix': te_matrix,
-        'te_std_trials': te_std_trials,
-        'zone_names': zone_names,
-        'zone_channels': zone_channels,
-        'eeg_channel_names': eeg_channel_names,
-        'trial_bounds': trial_bounds,
-        'maxlag_samples': maxlag_samples,
-        'maxlag_ms': float(maxlag_ms),
-        'sfreq': sfreq,
-        'min_obs_needed': int(min_obs_needed),
-        'errors': errors
+        "te_full": te_full,
+        "te_mean_lag": te_mean_lag,
+        "te_matrix": te_matrix,
+        "te_std_trials": te_std_trials,
+        "zone_names": zone_names,
+        "zone_channels": zone_channels,
+        "eeg_channel_names": eeg_channel_names,
+        "trial_bounds": trial_bounds,
+        "maxlag_samples": maxlag_samples,
+        "maxlag_ms": float(maxlag_ms),
+        "sfreq": sfreq,
+        "min_obs_needed": int(min_obs_needed),
+        "errors": errors,
     }
 
     return results
 
+
 # ============================================================================
 # EXAMPLE USAGE (MAIN)
 # ============================================================================
+
 
 def _build_aggregated_row(
     subject: str,
@@ -2792,108 +3501,107 @@ def _build_aggregated_row(
 ):
     """Create one aggregated row per subject / band / condition."""
 
-    row = {
-        'subject': subject,
-        'band': band,
-        'condition': int(condition),
-    }
+    row = {"subject": subject, "band": band, "condition": int(condition)}
 
     # ------------------------------------------------------------------
     # Spectral parametrization
     # ------------------------------------------------------------------
     if spectral_results is not None:
-        if spectral_results.get('mode') == 'trials':
-            z = spectral_results['zone_names']
+        if spectral_results.get("mode") == "trials":
+            z = spectral_results["zone_names"]
 
-            theta_avg = np.nanmean(spectral_results['theta_power_zones'], axis=0)
-            exp_avg = np.nanmean(spectral_results['aperiodic_exponent_zones'], axis=0)
-            off_avg = np.nanmean(spectral_results['aperiodic_offset_zones'], axis=0)
+            theta_avg = np.nanmean(spectral_results["theta_power_zones"], axis=0)
+            exp_avg = np.nanmean(spectral_results["aperiodic_exponent_zones"], axis=0)
+            off_avg = np.nanmean(spectral_results["aperiodic_offset_zones"], axis=0)
 
             for zi, zn in enumerate(z):
                 row[f"spec_theta_{zn}"] = float(theta_avg[zi])
                 row[f"spec_exp_{zn}"] = float(exp_avg[zi])
                 row[f"spec_off_{zn}"] = float(off_avg[zi])
 
-        elif spectral_results.get('mode') == 'continuous':
+        elif spectral_results.get("mode") == "continuous":
             # por si alguna vez lo usás en continuo
-            ch_names = spectral_results.get('channel_names', [])
-            row["spec_theta_global"] = float(np.nanmean(spectral_results['theta_power']))
-            row["spec_exp_global"] = float(np.nanmean(spectral_results['aperiodic_exponent']))
-            row["spec_off_global"] = float(np.nanmean(spectral_results['aperiodic_offset']))
+            ch_names = spectral_results.get("channel_names", [])
+            row["spec_theta_global"] = float(np.nanmean(spectral_results["theta_power"]))
+            row["spec_exp_global"] = float(np.nanmean(spectral_results["aperiodic_exponent"]))
+            row["spec_off_global"] = float(np.nanmean(spectral_results["aperiodic_offset"]))
 
     # ------------------------------------------------------------------
     # wPLI
     # ------------------------------------------------------------------
     if wpli_results is not None:
-        if wpli_results.get('mode') == 'trials':
-            zone_names = wpli_results['zone_names']
-            wpli_avg = np.nanmean(wpli_results['wpli_trials'], axis=0)   # (zones, zones)
-            row.update(_flatten_symmetric_zone_matrix(wpli_avg, zone_names, prefix='wpli'))
+        if wpli_results.get("mode") == "trials":
+            zone_names = wpli_results["zone_names"]
+            wpli_avg = np.nanmean(wpli_results["wpli_trials"], axis=0)  # (zones, zones)
+            row.update(_flatten_symmetric_zone_matrix(wpli_avg, zone_names, prefix="wpli"))
 
-        elif wpli_results.get('mode') == 'continuous':
-            zone_names = wpli_results['zone_names']
-            row.update(_flatten_symmetric_zone_matrix(wpli_results['wpli_matrix'], zone_names, prefix='wpli'))
+        elif wpli_results.get("mode") == "continuous":
+            zone_names = wpli_results["zone_names"]
+            row.update(_flatten_symmetric_zone_matrix(wpli_results["wpli_matrix"], zone_names, prefix="wpli"))
 
     # ------------------------------------------------------------------
     # Permutation Entropy
     # ------------------------------------------------------------------
     if pe_results is not None:
-        zone_names = pe_results['zone_names']
+        zone_names = pe_results["zone_names"]
 
-        if 'pe_matrix_zones' in pe_results:
-            pe_avg = np.nanmean(pe_results['pe_matrix_zones'], axis=1)
+        if "pe_matrix_zones" in pe_results:
+            pe_avg = np.nanmean(pe_results["pe_matrix_zones"], axis=1)
             for zi, zn in enumerate(zone_names):
                 row[f"pe_{zn}"] = float(pe_avg[zi])
 
-        elif 'pe_values' in pe_results:
+        elif "pe_values" in pe_results:
             for zi, zn in enumerate(zone_names):
-                row[f"pe_{zn}"] = float(pe_results['pe_values'][zi])
+                row[f"pe_{zn}"] = float(pe_results["pe_values"][zi])
 
     # ------------------------------------------------------------------
     # LZC
     # ------------------------------------------------------------------
     if lzc_results is not None:
-        zone_names = lzc_results['zone_names']
+        zone_names = lzc_results["zone_names"]
 
-        if 'lzc_matrix_zones' in lzc_results:
-            lzc_avg = np.nanmean(lzc_results['lzc_matrix_zones'], axis=1)
+        if "lzc_matrix_zones" in lzc_results:
+            lzc_avg = np.nanmean(lzc_results["lzc_matrix_zones"], axis=1)
             for zi, zn in enumerate(zone_names):
                 row[f"lzc_{zn}"] = float(lzc_avg[zi])
 
-        elif 'lzc_values' in lzc_results:
+        elif "lzc_values" in lzc_results:
             for zi, zn in enumerate(zone_names):
-                row[f"lzc_{zn}"] = float(lzc_results['lzc_values'][zi])
+                row[f"lzc_{zn}"] = float(lzc_results["lzc_values"][zi])
 
     # ------------------------------------------------------------------
     # Transfer Entropy
     # ------------------------------------------------------------------
     if te_results is not None:
-        zone_names = te_results['zone_names']
+        zone_names = te_results["zone_names"]
 
-        if 'te_mean_lag' in te_results:
-            te_avg = np.nanmean(te_results['te_mean_lag'], axis=0)  # (zones, zones)
-            row.update(_flatten_directed_zone_matrix(te_avg, zone_names, prefix='te', include_self=False))
+        if "te_mean_lag" in te_results:
+            te_avg = np.nanmean(te_results["te_mean_lag"], axis=0)  # (zones, zones)
+            row.update(_flatten_directed_zone_matrix(te_avg, zone_names, prefix="te", include_self=False))
 
-        elif 'te_matrix' in te_results:
-            row.update(_flatten_directed_zone_matrix(te_results['te_matrix'], zone_names, prefix='te', include_self=False))
+        elif "te_matrix" in te_results:
+            row.update(
+                _flatten_directed_zone_matrix(te_results["te_matrix"], zone_names, prefix="te", include_self=False)
+            )
 
     # ------------------------------------------------------------------
     # wSMI
     # ------------------------------------------------------------------
     if wsmi_results is not None:
-        zone_names = wsmi_results['zone_names']
+        zone_names = wsmi_results["zone_names"]
 
-        if 'wsmi_matrix' in wsmi_results:
-            wsmi_matrix = wsmi_results['wsmi_matrix']
+        if "wsmi_matrix" in wsmi_results:
+            wsmi_matrix = wsmi_results["wsmi_matrix"]
 
             if wsmi_matrix.ndim == 3:
                 wsmi_avg = np.nanmean(wsmi_matrix, axis=2)  # (zones, zones)
             else:
                 wsmi_avg = wsmi_matrix
 
-            row.update(_flatten_symmetric_zone_matrix(wsmi_avg, zone_names, prefix='wsmi'))
+            row.update(_flatten_symmetric_zone_matrix(wsmi_avg, zone_names, prefix="wsmi"))
 
     return row
+
 
 def append_subject_level_to_excel(df_new: pd.DataFrame, out_path: str | Path):
     """Append aggregated rows to a single Excel file, overwriting rows with same (subject, band, condition)."""
@@ -2902,7 +3610,7 @@ def append_subject_level_to_excel(df_new: pd.DataFrame, out_path: str | Path):
 
     if out_path.exists():
         try:
-            df_old = pd.read_excel(out_path, engine='openpyxl')
+            df_old = pd.read_excel(out_path, engine="openpyxl")
         except Exception:
             df_old = pd.DataFrame()
     else:
@@ -2911,31 +3619,32 @@ def append_subject_level_to_excel(df_new: pd.DataFrame, out_path: str | Path):
     if df_old.empty:
         df_combined = df_new.copy()
     else:
-        for col in ['subject', 'band', 'condition']:
+        for col in ["subject", "band", "condition"]:
             if col not in df_old.columns:
                 df_old[col] = np.nan
 
         df_keep = df_old
-        keys = df_new[['subject', 'band', 'condition']].drop_duplicates()
+        keys = df_new[["subject", "band", "condition"]].drop_duplicates()
 
         for _, r in keys.iterrows():
             mask = (
-                (df_keep['subject'] == r['subject']) &
-                (df_keep['band'] == r['band']) &
-                (df_keep['condition'] == r['condition'])
+                (df_keep["subject"] == r["subject"])
+                & (df_keep["band"] == r["band"])
+                & (df_keep["condition"] == r["condition"])
             )
             df_keep = df_keep.loc[~mask]
 
         df_combined = pd.concat([df_keep, df_new], ignore_index=True)
 
-    id_cols = ['subject', 'band', 'condition']
+    id_cols = ["subject", "band", "condition"]
     other_cols = [c for c in df_combined.columns if c not in id_cols]
     df_combined = df_combined[id_cols + sorted(other_cols)]
 
-    with pd.ExcelWriter(out_path, engine='openpyxl', mode='w') as writer:
-        df_combined.to_excel(writer, index=False, sheet_name='subject_level')
+    with pd.ExcelWriter(out_path, engine="openpyxl", mode="w") as writer:
+        df_combined.to_excel(writer, index=False, sheet_name="subject_level")
 
     return out_path
+
 
 if __name__ == "__main__":
     """
@@ -2981,100 +3690,145 @@ if __name__ == "__main__":
     # ========================================================================
     # STEP 0: CONFIGURATION
     # ========================================================================
-    BANDS = {
-    "delta": (1, 4),
-    "theta": (4, 8),
-    "alpha": (8, 12),
-    "beta":  (13, 30)
-    }
-    conds=[40, 60, 100]
+    BANDS = {"delta": (1, 4), "theta": (4, 8), "alpha": (8, 12), "beta": (13, 30)}
+    conds = [40, 60, 100]
     conds = [100]
     file_all = [
-    "01_test_2023",
-    "02_test_2023", 
-    "04_test_2023",
-    "05_test_2023",
-    "06_test_2023",
-    "07_test_2023",
-    "10_test_2023",
-    "11_test_2023",
-    "13_test_2023",
-    "14_test_2023",
-    "15_test_2023",
-    "16_test_2023", 
-    "20_test_2023", 
-    "21_test_2023",
-    "22_test_2023",
-    "23_test_2023",
-    "24_test_2023",
-    "25_test_2023", 
-    "26_test_2023",
-    "28_test_2023",
-    "29_test_2023",
-    "31_test_2023",
-    "34_test_2023"]
+        "01_test_2023",
+        "02_test_2023",
+        "04_test_2023",
+        "05_test_2023",
+        "06_test_2023",
+        "07_test_2023",
+        "10_test_2023",
+        "11_test_2023",
+        "12_test_2023",  # s= 8 - 12_test_2023 ANULADO
+        "13_test_2023",
+        "14_test_2023",
+        "15_test_2023",
+        "16_test_2023",
+        "20_test_2023",
+        "21_test_2023",
+        "22_test_2023",
+        "23_test_2023",
+        "24_test_2023",
+        "25_test_2023",
+        "26_test_2023",
+        "28_test_2023",
+        "29_test_2023",
+        "30_test_2023",
+        "30_test_2023_bis",
+        "31_test_2023",
+        "34_test_2023",
+        "30_test_2023_merged_raw",
+    ]
 
     # Bad channels to interpolate
     bads_all = [
-    ["B2","C4","C30",'D4', "D5",'D10','D12'],  # s=0 - 01
-    ["C10", "D8", "D9", "D24", "D25"],  # s=1 - 02
-    ["B4", "B8", "B9", "C29", "D5", "D23"],  # s=2 - 04
-    ["B4", "B8", "B9", "C29", "D5", "D23"],  # s=3 - 05
-    ["B6", "D10", "D25", "D29"],  # s=4 - 06
-    ["C8"],  # s=5 - 07
-    ["A10", "A17", "A27", "B4", "B30", "B31", "C17", "C29", "C32", "D19"],  # s=6 - 10
-    ['B13'], #s= 7 - 11_test_2023 RARISIMO EL PSD
-    ['A23','B20','B21','B23','C16','C29','C30','C32','D3','D23'], #s=9 - 13 
-    ['A6','A7','A12','A13','A26','D22','D23'],#s= 10 - 14_test_2023
-    ['A9','A30','B7','C21','C22','D18','C8','C14'],#s = 11 - 15_test_2023
-    ['B24','D31','D32'],#s = 12 - 16_test_2023
-    ['A6','D3','D27'],#s = 13 - 20_test_2023
-    ['A12','A13','A14','B8','B9','B28','D11','D23'],#s = 14 - 21_test_2023
-    ['A32','C4','C5','C6','C7','C8','C16','C17','C29'],#s = 15 - 22_test_2023
-    ['C14','C15','D4'],#s = 16 - 23_test_2023 #MUY FEO.
-    ['A32','B9','B27','C16','D20','D30','D32'],
-    ['A10','A24','A25','A32','B23','B25','C18','C23','C24','C28','D31','D32'],#s = 18 - 25_test_2023
-    ['A17','A25','C6','D17','D19','D22','D23','D24','D28','D32'],#s = 19 - 26_test_2023
-    ['B8','B9','B26','C16'],#s = 20 - 28_test_2023
-    ['A14','A21','A22','A31','B3','B4','B24','C2','C23','D22','D23'],#s = 21 - 29_test_2023
-    ['A6','A15','B1','B13','C26','D3'],#s = 22 - 30_test_2023
-    ['A15','A20','B6','B13','C30','D3'],#s = 23 - 30_test_2023_bis
-    ['A11','B21','C16','C17','C29','C30','D5'],#s = 24 - 31_test_2023
-    ['A24','B1','B2','B18','B19','B28','B32','C6','C28','D8','D11','D12','D26'],#s = 25 - 34_test_2023
-    []]
-    
-    # file_all = [
-    # "01_test_2023"]
-    # bads_all = [
-    # ["B2","C4","C30",'D4', "D5",'D10','D12']]
-    # conds=[40]
+        ["B2", "C4", "C30", "D4", "D5", "D10", "D12"],  # s=0 - 01
+        ["C10", "D8", "D9", "D24", "D25"],  # s=1 - 02
+        ["B4", "B8", "B9", "C29", "D5", "D23"],  # s=2 - 04
+        ["B4", "B8", "B9", "C29", "D5", "D23"],  # s=3 - 05
+        ["B6", "D10", "D25", "D29"],  # s=4 - 06
+        ["C8"],  # s=5 - 07
+        ["A10", "A17", "A27", "B4", "B30", "B31", "C17", "C29", "C32", "D19"],  # s=6 - 10
+        ["B13"],  # s= 7 - 11_test_2023 RARISIMO EL PSD
+        [],  # s= 8 - 12_test_2023 ANULADO
+        ["A23", "B20", "B21", "B23", "C16", "C29", "C30", "C32", "D3", "D23"],  # s=9 - 13
+        ["A6", "A7", "A12", "A13", "A26", "D22", "D23"],  # s= 10 - 14_test_2023
+        ["A9", "A30", "B7", "C21", "C22", "D18", "C8", "C14"],  # s = 11 - 15_test_2023
+        ["B24", "D31", "D32"],  # s = 12 - 16_test_2023
+        ["A6", "D3", "D27"],  # s = 13 - 20_test_2023
+        ["A12", "A13", "A14", "B8", "B9", "B28", "D11", "D23"],  # s = 14 - 21_test_2023
+        ["A32", "C4", "C5", "C6", "C7", "C8", "C16", "C17", "C29"],  # s = 15 - 22_test_2023
+        ["C14", "C15", "D4"],  # s = 16 - 23_test_2023 #MUY FEO.
+        ["A32", "B9", "B27", "C16", "D20", "D30", "D32"],
+        ["A10", "A24", "A25", "A32", "B23", "B25", "C18", "C23", "C24", "C28", "D31", "D32"],  # s = 18 - 25_test_2023
+        ["A17", "A25", "C6", "D17", "D19", "D22", "D23", "D24", "D28", "D32"],  # s = 19 - 26_test_2023
+        ["B8", "B9", "B26", "C16"],  # s = 20 - 28_test_2023
+        ["A14", "A21", "A22", "A31", "B3", "B4", "B24", "C2", "C23", "D22", "D23"],  # s = 21 - 29_test_2023
+        ["A6", "A15", "B1", "B13", "C26", "D3"],  # s = 22 - 30_test_2023
+        ["A15", "A20", "B6", "B13", "C30", "D3"],  # s = 23 - 30_test_2023_bis
+        ["A11", "B21", "C16", "C17", "C29", "C30", "D5"],  # s = 24 - 31_test_2023
+        [
+            "A24",
+            "B1",
+            "B2",
+            "B18",
+            "B19",
+            "B28",
+            "B32",
+            "C6",
+            "C28",
+            "D8",
+            "D11",
+            "D12",
+            "D26",
+        ],  # s = 25 - 34_test_2023
+        ["A6", "A8", "A15", "B24", "C16", "D3"],
+    ]
+
+    bads_ICA = [
+        [0, 4, 13, 14],  # s = 0
+        [0, 3, 9, 14],  # s = 1
+        [0, 2, 12],  # s = 2
+        [0, 3, 5, 8, 13],  # s = 3
+        [0, 1, 5, 12],  # s = 4
+        [0, 3, 6, 8, 9, 11, 14],  # s = 5
+        [0, 3, 4, 10, 11, 12, 13],  # s = 6
+        [0, 1, 6, 14],  # s = 7
+        [],  # s = 8 ANULADO
+        [1, 4, 10, 12],  # s = 9
+        [0, 2, 6, 10, 12, 13],  # s = 10
+        [0, 5, 9, 11],  # s = 11
+        [0, 3, 4, 8, 13],  # s = 12
+        [0, 1, 9, 14],  # s = 13
+        [0, 2, 5, 12, 13, 14],  # s = 14
+        [0, 1, 3, 13, 14],  # s = 15
+        [0, 1, 2, 5, 11, 13, 14],  # s = 16
+        [0, 3, 4, 11, 12, 13],  # s = 17
+        [1, 7, 8, 10, 14],  # s = 18
+        [0, 2, 3, 8, 9],  # s = 19
+        [0, 1, 3, 4, 10],  # s = 20
+        [0, 3, 7, 11, 12, 14],  # s = 21
+        [],  # s = 22 ANULADO
+        [],  # s = 23 ANULADO
+        [0, 4, 6, 8, 11, 14],  # s = 24
+        [0, 2, 3, 5, 7, 14],  # s = 25
+        [1, 4, 5, 8, 11, 13],
+    ]
 
     for BAND_NAME, BAND_RANGE in BANDS.items():
         for start_code in conds:
             for i in range(len(file_all)):
-                #BAND_NAME = "theta"
-                #BAND_RANGE = BANDS[BAND_NAME]
+                # BAND_NAME = "theta"
+                # BAND_RANGE = BANDS[BAND_NAME]
 
                 # Data location
-                path = "E:/Doctorado/protocol2023/" 
-                #path = "/media/pedro/Expansion/Doctorado/Protocol2023/"
-                
-                #file = "01_test_2023"  # Filename without .bdf extension
-                file =file_all[i]
+                path = "E:/Doctorado/protocol2023/"
+                # path = "/media/pedro/Expansion/Doctorado/Protocol2023/"
+
+                # file = "01_test_2023"  # Filename without .bdf extension
+                file = file_all[i]
                 # Channels to exclude
                 excluded = [
-                    "EXG3", "EXG4", "EXG5", "EXG6", "EXG7", "EXG8",  # External electrodes
+                    "EXG3",
+                    "EXG4",
+                    "EXG5",
+                    "EXG6",
+                    "EXG7",
+                    "EXG8",  # External electrodes
                 ]
 
                 # Bad channels to interpolate
                 # Add channels that show artifacts or noise
                 # Example: bads = ["A5", "C12", "D8"]
-                #bads = []  # Empty = no bad channels
+                # bads = []  # Empty = no bad channels
                 bads = bads_all[i]
 
-                print("\n" + "="*80)
+                print("\n" + "=" * 80)
                 print("EEG FEATURE EXTRACTION PIPELINE")
-                print("="*80)
+                print("=" * 80)
                 print(f"File: {file}")
                 print(f"Band: {BAND_NAME, BAND_RANGE} Hz")
                 print(f"Condition: {start_code}")
@@ -3089,37 +3843,62 @@ if __name__ == "__main__":
                     file=file,
                     excluded=excluded,
                     bads=bads,
-                    lowpass_cut=1,      # High-pass filter: remove slow drifts < 1 Hz
-                    highpass_cut=30,    # Low-pass filter: remove noise > 30 Hz
-                    raw_plot=False,     # Set True to visually inspect raw data
+                    lowpass_cut=1,  # High-pass filter: remove slow drifts < 1 Hz
+                    highpass_cut=30,  # Low-pass filter: remove noise > 30 Hz
+                    raw_plot=False,  # Set True to visually inspect raw data
                     filtered_plot=False,  # Set True to see filtered data
-                    psd_plot=False,     # Set True to see power spectrum
-                    edit_marks=True,   # Set True to add time markers
-                    interpolate=True    # Interpolate bad channels
+                    psd_plot=False,  # Set True to see power spectrum
+                    edit_marks=True,  # Set True to add time markers
+                    interpolate=True,  # Interpolate bad channels
+                )
+
+                ica, raw_original_clean = make_ICA(
+                    raw_original,
+                    method="infomax",
+                    n_components=15,
+                    decim=3,
+                    random_state=23,
+                    reject_limit=250e-6,
+                    bad_ica_channels=bads_ICA[s],
+                    plot_ica_topo=True,
+                    plot_ica_time=True,
+                    plot_raw=True,
+                )
+                ica, raw_marked_clean = make_ICA(
+                    raw_marked,
+                    method="infomax",
+                    n_components=15,
+                    decim=3,
+                    random_state=23,
+                    reject_limit=250e-6,
+                    bad_ica_channels=bads_ICA[s],
+                    plot_ica_topo=True,
+                    plot_ica_time=True,
+                    plot_raw=True,
                 )
 
                 # ========================================================================
                 # TRIAL SEGMENTATION (shared across all trial-wise features)
                 # ========================================================================
                 STATUS_CHANNEL = "Status"
-                STATUS_START_CODE = start_code   # <-- estímulo (ajustar según tu protocolo)
-                STATUS_END_CODE = -1   # <-- respuesta (o -1 para "siguiente impulso no-cero")
+                STATUS_START_CODE = start_code  # <-- estímulo (ajustar según tu protocolo)
+                STATUS_END_CODE = -1  # <-- respuesta (o -1 para "siguiente impulso no-cero")
 
                 trial_info = _extract_trials_from_status(
-                    raw_marked,
+                    raw_marked_clean,
                     status_channel=STATUS_CHANNEL,
-                    trial_mode='average',
+                    trial_mode="average",
                     status_start_code=STATUS_START_CODE,
                     status_end_code=STATUS_END_CODE,
                 )
                 if trial_info is None:
                     raise RuntimeError("No se detectaron trials en el canal Status. Revisa STATUS_*_CODE.")
-                trial_info['sfreq'] = float(raw_marked.info['sfreq'])
+                trial_info["sfreq"] = float(raw_marked_clean.info["sfreq"])
                 print(f"\nTrials detectados: {trial_info['n_trials']}")
                 trial_info_wpli = _extract_trials_from_status(
-                    raw_original,
+                    raw_original_clean,
                     status_channel=STATUS_CHANNEL,
-                    trial_mode='average',
+                    trial_mode="average",
                     status_start_code=STATUS_START_CODE,
                     status_end_code=STATUS_END_CODE,
                 )
@@ -3127,11 +3906,10 @@ if __name__ == "__main__":
                 if trial_info_wpli is None:
                     raise RuntimeError("No se detectaron trials para wPLI en raw_original.")
 
-                trial_info_wpli['sfreq'] = float(raw_original.info['sfreq'])
+                trial_info_wpli["sfreq"] = float(raw_original_clean.info["sfreq"])
 
                 print(f"Trials detectados resto  : {trial_info['n_trials']}")
                 print(f"Trials detectados wPLI   : {trial_info_wpli['n_trials']}")
-
 
                 # ========================================================================
                 # STEP 2: SPECTRAL PARAMETRIZATION
@@ -3139,9 +3917,9 @@ if __name__ == "__main__":
                 print("\n[STEP 2/7] SPECTRAL PARAMETRIZATION")
 
                 results_spectral = spectral_parametrization(
-                    raw_marked,
-                    band_range=BAND_RANGE,   # band limits
-                    freq_range=(1, 30),   # Full range for FOOOF fitting
+                    raw_marked_clean,
+                    band_range=BAND_RANGE,  # band limits
+                    freq_range=(1, 30),  # Full range for FOOOF fitting
                     status_channel=STATUS_CHANNEL,
                     status_start_code=STATUS_START_CODE,
                     status_end_code=STATUS_END_CODE,
@@ -3156,20 +3934,20 @@ if __name__ == "__main__":
                 # results_pe['tau'] - tau used
                 # results_pe['trial_bounds'] - list of (start, end, end_code) in samples
                 # Quick sanity check (trial-wise): show global means over trials+zones
-                tz = results_spectral['theta_power_zones']
-                ez = results_spectral['aperiodic_exponent_zones']
-                oz = results_spectral['aperiodic_offset_zones']
-                #print(BAND_RANGE, f"_power_zones: mean={np.nanmean(tz):.6f} | std={np.nanstd(tz):.6f}")
-                #print(f"aperiodic_exponent_zones: mean={np.nanmean(ez):.6f} | std={np.nanstd(ez):.6f}")
-                #print(f"aperiodic_offset_zones: mean={np.nanmean(oz):.6f} | std={np.nanstd(oz):.6f}")
-                
+                tz = results_spectral["theta_power_zones"]
+                ez = results_spectral["aperiodic_exponent_zones"]
+                oz = results_spectral["aperiodic_offset_zones"]
+                # print(BAND_RANGE, f"_power_zones: mean={np.nanmean(tz):.6f} | std={np.nanstd(tz):.6f}")
+                # print(f"aperiodic_exponent_zones: mean={np.nanmean(ez):.6f} | std={np.nanstd(ez):.6f}")
+                # print(f"aperiodic_offset_zones: mean={np.nanmean(oz):.6f} | std={np.nanstd(oz):.6f}")
+
                 # ========================================================================
                 # STEP 3: PHASE CONNECTIVITY (wPLI)
                 # ========================================================================
                 print("\n[STEP 3/7] PHASE CONNECTIVITY (wPLI)")
 
                 results_wpli = phase_connectivity_wpli(
-                    raw_original,
+                    raw_original_clean,
                     band_range=BAND_RANGE,
                     status_channel=STATUS_CHANNEL,
                     status_start_code=STATUS_START_CODE,
@@ -3190,7 +3968,7 @@ if __name__ == "__main__":
 
                 # Modo continuo (rápido)
                 results_wsmi = patterns_connectivity_wsmi(
-                    raw_marked,
+                    raw_marked_clean,
                     band_range=BAND_RANGE,
                     embedding_dim=3,
                     tau=None,
@@ -3198,18 +3976,18 @@ if __name__ == "__main__":
                     status_start_code=STATUS_START_CODE,
                     status_end_code=STATUS_END_CODE,
                     trial_mode="average",
-                    n_channels_per_zone=None,      # << completo
-                    debug_first_pair=False
+                    n_channels_per_zone=None,  # << completo
+                    debug_first_pair=False,
                 )
-                wsmi = results_wsmi['wsmi_matrix']  # (5, 5, n_trials)
-                #print(wsmi)
+                wsmi = results_wsmi["wsmi_matrix"]  # (5, 5, n_trials)
+                # print(wsmi)
                 # ========================================================================
                 # STEP 5: LEMPEL-ZIV COMPLEXITY (LZC)
                 # ========================================================================
                 print("\n[STEP 5/7] LEMPEL-ZIV COMPLEXITY (LZC)")
 
                 results_lzc = lempel_ziv_complexity(
-                    raw_marked,
+                    raw_marked_clean,
                     freq_range=(1, 30),
                     status_channel=STATUS_CHANNEL,
                     status_start_code=STATUS_START_CODE,
@@ -3229,14 +4007,14 @@ if __name__ == "__main__":
                 print("\n[STEP 6/7] PERMUTATION ENTROPY (PE)")
 
                 results_pe = permutation_entropy(
-                    raw_marked,
-                    band_range=BAND_RANGE,        # Theta band for PE
-                    embedding_dim=3,           # m
-                    tau=None,                 # auto (MATLAB-like)
+                    raw_marked_clean,
+                    band_range=BAND_RANGE,  # Theta band for PE
+                    embedding_dim=3,  # m
+                    tau=None,  # auto (MATLAB-like)
                     status_channel=STATUS_CHANNEL,
                     status_start_code=STATUS_START_CODE,
                     status_end_code=STATUS_END_CODE,
-                    trial_mode="average"      # mantiene matriz por trial + avg/std
+                    trial_mode="average",  # mantiene matriz por trial + avg/std
                 )
                 # Access results:
                 # results_pe['pe_matrix_zones'] - array (n_zones, n_trials)
@@ -3251,15 +4029,15 @@ if __name__ == "__main__":
                 print("\n[STEP 7/7] TRANSFER ENTROPY (TE-GCMI)")
 
                 results_te = transfer_entropy(
-                    raw_marked,
+                    raw_marked_clean,
                     # robust to sampling rate (interpreted in milliseconds)
                     maxlag_ms=400.0,
-                    maxlag=None,              # if set, overrides maxlag_ms (in samples)
-                    min_obs_needed=30,        # minimum number of *samples* beyond the lag
+                    maxlag=None,  # if set, overrides maxlag_ms (in samples)
+                    min_obs_needed=30,  # minimum number of *samples* beyond the lag
                     status_channel=STATUS_CHANNEL,
                     status_start_code=STATUS_START_CODE,
                     status_end_code=STATUS_END_CODE,
-                    biascorrect=True
+                    biascorrect=True,
                 )
 
                 # ========================================================================
@@ -3274,7 +4052,7 @@ if __name__ == "__main__":
                     pe_results=results_pe,
                     lzc_results=results_lzc,
                     te_results=results_te,
-                    wsmi_results=results_wsmi if 'results_wsmi' in locals() else None,
+                    wsmi_results=results_wsmi if "results_wsmi" in locals() else None,
                 )
 
                 df_new = pd.DataFrame([row])
@@ -3287,52 +4065,49 @@ if __name__ == "__main__":
                 te_matrix = results_te["te_matrix"]
                 te_std = results_te["te_std_trials"]
 
-                print(
-                    "\nTransfer Entropy Matrix (Zone → Zone) [mean over lags, mean over trials]:")
+                print("\nTransfer Entropy Matrix (Zone → Zone) [mean over lags, mean over trials]:")
                 print("============================================================")
-                print(f"{'From / To':15s}", end='')
+                print(f"{'From / To':15s}", end="")
                 for name in zone_names:
-                    print(f"{name:12s}", end='')
+                    print(f"{name:12s}", end="")
                 print()
 
                 for i, name_i in enumerate(zone_names):
-                    print(f"{name_i:15s}", end='')
+                    print(f"{name_i:15s}", end="")
                     for j in range(len(zone_names)):
                         val = te_matrix[i, j]
                         if np.isnan(val):
-                            print(f"{'nan':12s}", end='')
+                            print(f"{'nan':12s}", end="")
                         else:
-                            print(f"{val:12.6f}", end='')
+                            print(f"{val:12.6f}", end="")
                     print()
 
-                #print("\nStd across trials (mean over lags):")
-                #print("============================================================")
-                #print(f"{'From / To':15s}", end='')
+                # print("\nStd across trials (mean over lags):")
+                # print("============================================================")
+                # print(f"{'From / To':15s}", end='')
                 for name in zone_names:
-                    print(f"{name:12s}", end='')
+                    print(f"{name:12s}", end="")
                 print()
 
                 for i, name_i in enumerate(zone_names):
-                    print(f"{name_i:15s}", end='')
+                    print(f"{name_i:15s}", end="")
                     for j in range(len(zone_names)):
                         val = te_std[i, j]
                         if np.isnan(val):
-                            print(f"{'nan':12s}", end='')
+                            print(f"{'nan':12s}", end="")
                         else:
-                            print(f"{val:12.6f}", end='')
+                            print(f"{val:12.6f}", end="")
                     print()
 
                 print("\nTE details:")
+                print(f"  te_full shape      : {results_te['te_full'].shape}  (trials, zones, zones, lags)")
+                print(f"  te_mean_lag shape  : {results_te['te_mean_lag'].shape}  (trials, zones, zones)")
                 print(
-                    f"  te_full shape      : {results_te['te_full'].shape}  (trials, zones, zones, lags)")
-                print(
-                    f"  te_mean_lag shape  : {results_te['te_mean_lag'].shape}  (trials, zones, zones)")
-                print(
-                    f"  maxlag_samples/ms  : {results_te['maxlag_samples']} samples  (~{results_te['maxlag_ms']:.1f} ms)")
+                    f"  maxlag_samples/ms  : {results_te['maxlag_samples']} samples  (~{results_te['maxlag_ms']:.1f} ms)"
+                )
                 print(f"  sfreq              : {results_te['sfreq']} Hz")
                 if results_te.get("errors"):
-                    print(
-                        f"  WARN: {len(results_te['errors'])} TE errors occurred; showing first 3:")
+                    print(f"  WARN: {len(results_te['errors'])} TE errors occurred; showing first 3:")
                     for e in results_te["errors"][:3]:
                         print("   ", e)
                 # Access results:
@@ -3344,19 +4119,20 @@ if __name__ == "__main__":
                 # ========================================================================
                 # PIPELINE COMPLETED
                 # ========================================================================
-                print("\n" + "="*80)
+                print("\n" + "=" * 80)
                 print("PIPELINE COMPLETED!")
-                print("="*80)
-                #print("\nResults available in:")
-                #print("  - results_spectral:", BAND_NAME, "power, aperiodic parameters")
-                #print("  - results_wpli: wPLI connectivity matrix")
-                #print("  - results_lzc: LZC values per zone")
-                #print("  - results_pe: PE values per zone")
-                #print("  - results_te: TE connectivity matrix (directional)")
-                #print("  - results_wsmi: wSMI connectivity matrix")
-                del raw_original
-                del raw_marked
+                print("=" * 80)
+                # print("\nResults available in:")
+                # print("  - results_spectral:", BAND_NAME, "power, aperiodic parameters")
+                # print("  - results_wpli: wPLI connectivity matrix")
+                # print("  - results_lzc: LZC values per zone")
+                # print("  - results_pe: PE values per zone")
+                # print("  - results_te: TE connectivity matrix (directional)")
+                # print("  - results_wsmi: wSMI connectivity matrix")
+                del raw_original_clean
+                del raw_marked_clean
                 import gc
+
                 gc.collect()
 
     root = tk.Tk()
