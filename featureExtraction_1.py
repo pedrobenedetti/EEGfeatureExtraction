@@ -21,6 +21,7 @@ Author: pbenedetti@itba.edu.ar
 Date: January 2026
 """
 
+import time
 import tkinter as tk
 from itertools import permutations
 from pathlib import Path
@@ -61,6 +62,7 @@ def preprocessing_mne(
         raw = mne.io.read_raw_bdf(filepath, preload=True, verbose=False, eog=eog, misc=misc, exclude=excluded)
     except:
         try:
+            filepath = path + file + ".fif"
             print("No se encontró el .bdf, probando con .fif")
             raw = mne.io.read_raw_fif(filepath, preload=True, verbose=False)
         except:
@@ -156,8 +158,8 @@ def preprocessing_mne(
         # plt.show()
         events_original = mne.find_events(raw_original, stim_channel="Status")
         events_marked = mne.find_events(raw_marked, stim_channel="Status")
-        print("raw_marked", events_marked)
-        print("raw_original", events_original)
+        # print("raw_marked", events_marked)
+        # print("raw_original", events_original)
 
     return raw_original, raw_marked
 
@@ -1184,7 +1186,7 @@ def patterns_connectivity_wsmi(
         n_trials = len(trial_indices)
 
         print(f"\n[MODE: TRIAL-BY-TRIAL] Calculating wSMI for {n_trials} trials...")
-        print(f"Estimated time: {n_trials * 5}-{n_trials * 10} minutes...")
+        # print(f"Estimated time: {n_trials * 5}-{n_trials * 10} minutes...")
 
         # Initialize 3D matrix
         n_zones = len(zone_names)
@@ -1221,7 +1223,7 @@ def patterns_connectivity_wsmi(
                 wsmi_matrix[:, :, trial_idx] = np.nan
                 continue
 
-            print(f"\n  Trial {trial_idx + 1}/{n_trials} (samples {start_sample}-{end_sample})...")
+            # print(f"\n  Trial {trial_idx + 1}/{n_trials} (samples {start_sample}-{end_sample})...")
 
             # Calculate for this trial
             wsmi_all_trial = _calculate_wsmi_matrix(
@@ -1244,12 +1246,12 @@ def patterns_connectivity_wsmi(
         print("=" * 60)
         _print_matrix(wsmi_matrix, zone_names)
     else:
-        print(f"\nwSMI Connectivity Matrix (Zone-to-Zone, Averaged over {n_trials} trials):")
-        print("=" * 60)
+        # print(f"\nwSMI Connectivity Matrix (Zone-to-Zone, Averaged over {n_trials} trials):")
+        # print("=" * 60)
         wsmi_avg = wsmi_matrix.mean(axis=2)
         _print_matrix(wsmi_avg, zone_names)
 
-        print("\nStandard deviation across trials:")
+        # print("\nStandard deviation across trials:")
         wsmi_std = wsmi_matrix.std(axis=2)
         _print_matrix(wsmi_std, zone_names)
 
@@ -3693,7 +3695,7 @@ if __name__ == "__main__":
     # ========================================================================
     BANDS = {"delta": (1, 4), "theta": (4, 8), "alpha": (8, 12), "beta": (13, 30)}
     conds = [40, 60, 100]
-    conds = [100]
+    # conds = [100]
     file_all = [
         "01_test_2023",
         "02_test_2023",
@@ -3717,8 +3719,8 @@ if __name__ == "__main__":
         "26_test_2023",
         "28_test_2023",
         "29_test_2023",
-        "30_test_2023",
-        "30_test_2023_bis",
+        # "30_test_2023",
+        # "30_test_2023_bis",
         "31_test_2023",
         "34_test_2023",
         "30_test_2023_merged_raw",
@@ -3748,8 +3750,8 @@ if __name__ == "__main__":
         ["A17", "A25", "C6", "D17", "D19", "D22", "D23", "D24", "D28", "D32"],  # s = 19 - 26_test_2023
         ["B8", "B9", "B26", "C16"],  # s = 20 - 28_test_2023
         ["A14", "A21", "A22", "A31", "B3", "B4", "B24", "C2", "C23", "D22", "D23"],  # s = 21 - 29_test_2023
-        ["A6", "A15", "B1", "B13", "C26", "D3"],  # s = 22 - 30_test_2023
-        ["A15", "A20", "B6", "B13", "C30", "D3"],  # s = 23 - 30_test_2023_bis
+        # ["A6", "A15", "B1", "B13", "C26", "D3"],  # s = 22 - 30_test_2023
+        # ["A15", "A20", "B6", "B13", "C30", "D3"],  # s = 23 - 30_test_2023_bis
         ["A11", "B21", "C16", "C17", "C29", "C30", "D5"],  # s = 24 - 31_test_2023
         [
             "A24",
@@ -3792,16 +3794,32 @@ if __name__ == "__main__":
         [0, 2, 3, 8, 9],  # s = 19
         [0, 1, 3, 4, 10],  # s = 20
         [0, 3, 7, 11, 12, 14],  # s = 21
-        [],  # s = 22 ANULADO
-        [],  # s = 23 ANULADO
+        # [],  # s = 22 ANULADO
+        # [],  # s = 23 ANULADO
         [0, 4, 6, 8, 11, 14],  # s = 24
         [0, 2, 3, 5, 7, 14],  # s = 25
         [1, 4, 5, 8, 11, 13],
     ]
-
+    n_combinations = len(file_all) * len(BANDS) * len(conds)
+    n_cycle = 0
+    time_diff = 0
     for BAND_NAME, BAND_RANGE in BANDS.items():
         for start_code in conds:
             for i in range(len(file_all)):
+                start_time = time.time()
+
+                if n_cycle != 0:
+                    porc = 100 * n_cycle / n_combinations
+                    print(f"{n_cycle} ciclo(s) de {n_combinations} // {porc:.2f} %")
+                    print(f"Cycle time: {time_diff:.2f} segs")
+
+                    remm_time = time_diff * (n_combinations - n_cycle)
+                    hs, res = divmod(remm_time, 3600)
+                    minus, seg = divmod(res, 60)
+
+                    print(f"Estimated rammaining time: {hs} hours, {minus} minutes, {seg:.2f} segs")
+                n_cycle = n_cycle + 1
+
                 # BAND_NAME = "theta"
                 # BAND_RANGE = BANDS[BAND_NAME]
 
@@ -3833,10 +3851,13 @@ if __name__ == "__main__":
                 print(f"File: {file}")
                 print(f"Band: {BAND_NAME, BAND_RANGE} Hz")
                 print(f"Condition: {start_code}")
+                print(f"Bads channel(s): {bads}")
+                print(f"Bads ICA component(s): {bads_ICA}")
 
                 # ========================================================================
                 # STEP 1: PREPROCESSING
                 # ========================================================================
+
                 print("\n[STEP 1/7] PREPROCESSING")
 
                 raw_original, raw_marked = preprocessing_mne(
@@ -3861,9 +3882,9 @@ if __name__ == "__main__":
                     random_state=23,
                     reject_limit=250e-6,
                     bad_ica_channels=bads_ICA,
-                    plot_ica_topo=True,
-                    plot_ica_time=True,
-                    plot_raw=True,
+                    plot_ica_topo=False,
+                    plot_ica_time=False,
+                    plot_raw=False,
                 )
                 ica, raw_marked_clean = make_ICA(
                     raw_marked,
@@ -3872,10 +3893,10 @@ if __name__ == "__main__":
                     decim=3,
                     random_state=23,
                     reject_limit=250e-6,
-                    bad_ica_channels=bads_ICA[s],
-                    plot_ica_topo=True,
-                    plot_ica_time=True,
-                    plot_raw=True,
+                    bad_ica_channels=bads_ICA,
+                    plot_ica_topo=False,
+                    plot_ica_time=False,
+                    plot_raw=False,
                 )
 
                 # ========================================================================
@@ -4135,6 +4156,8 @@ if __name__ == "__main__":
                 import gc
 
                 gc.collect()
+                end_time = time.time()
+                time_diff = end_time - start_time
 
     root = tk.Tk()
     root.withdraw()  # oculta la ventana principal vacía
